@@ -8,16 +8,19 @@ import time
 from streamlit.web.server.websocket_headers import _get_websocket_headers
 
 # -----------------------------------------------------------------------------
-# 0. 설정 및 비밀키
+# 0. 설정 및 AI 연결 (보안 강화됨!)
 # -----------------------------------------------------------------------------
-GOOGLE_API_KEY = 'AIzaSyCe9grvudKeA2bsQa1eszvgnqi_9fiMfqM' # 네 키 유지
-
+# [중요] 깃허브에 올릴 때 키가 노출되지 않도록 st.secrets 사용
 try:
-    genai.configure(api_key=GOOGLE_API_KEY)
+    # 스트림릿 클라우드의 Secrets 관리자에서 'GOOGLE_API_KEY'를 가져옴
+    api_key = st.secrets["GOOGLE_API_KEY"]
+    genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
     AI_AVAILABLE = True
-except Exception:
+except Exception as e:
+    # 로컬에서 테스트할 때나 키가 없을 때를 대비한 예외처리
     AI_AVAILABLE = False
+    # (배포 후에는 Secrets 설정이 없으면 경고가 뜰 것임)
 
 DB_FILE = "finance_pro_v3.db"
 st.set_page_config(page_title="똑똑한 과대표 AI 장부 Pro", layout="wide", page_icon="🏫")
@@ -147,7 +150,7 @@ def run_query(query, params=(), fetch=False):
 init_db()
 
 # -----------------------------------------------------------------------------
-# 2. 보안 검문소 & 관리자 기능
+# 2. 보안 검문소 & 관리자 기능 (루비콘)
 # -----------------------------------------------------------------------------
 def check_rubicon_security():
     status = run_query("SELECT value FROM system_config WHERE key = 'status'", fetch=True)[0][0]
@@ -208,24 +211,23 @@ def check_rubicon_security():
 check_rubicon_security()
 
 # -----------------------------------------------------------------------------
-# 3. 사이드바: [수정됨] 실명제 강화 구역
+# 3. 사이드바: 실명제 강화 구역
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("📂 행사(프로젝트) 센터")
     
     # 🕵️‍♂️ [강화된 실명제 로직]
-    # 관리자가 아니면 이름을 입력하지 않으면 아예 통과시켜주지 않음 (STOP)
     query_params = st.query_params
     if query_params.get("mode") != "caesar":
         st.info("🔒 보안을 위해 실명을 입력해주세요.")
         
-        # 이름 입력창 (경고 문구 삭제함)
+        # 이름 입력창
         op_name = st.text_input("작업자 실명 (예: 홍길동)", key="operator_name_input")
         
-        # 이름이 비어있으면? -> 여기서 코드 실행을 멈춰버림!
+        # 이름이 비어있으면? -> 코드 실행 중단 (Hard Gate)
         if not op_name:
             st.warning("👈 사이드바에 이름을 입력해야 장부가 열립니다.")
-            st.stop() # 🛑 여기가 핵심! 이름 없으면 아래 코드 실행 안 됨 (화면 안 보임)
+            st.stop()
             
     st.markdown("---")
     
@@ -251,18 +253,22 @@ with st.sidebar:
     current_project_id = project_dict[selected_project_name]
     
     st.divider()
-    st.caption(f"🤖 AI 상태: {'🟢 연결됨' if AI_AVAILABLE else '🔴 오프라인'}")
+    
+    # AI 연결 상태 표시
+    if AI_AVAILABLE:
+        st.success("🤖 AI 감사관: 연결됨")
+    else:
+        st.error("🤖 AI 감사관: 오프라인 (API 키 확인 필요)")
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
 # -----------------------------------------------------------------------------
 st.title(f"🏫 {selected_project_name} 통합 회계 장부")
 
-# 관리자가 아닌데 여기까지 왔다는 건 이름을 입력했다는 뜻이므로 환영 메시지 살짝
 if st.query_params.get("mode") != "caesar":
     st.caption(f"👋 안녕하세요, **{st.session_state.get('operator_name_input')}** 학우님! 꼼꼼한 기록 부탁드려요.")
 
-tab1, tab2, tab3 = st.tabs(["💰 예산 조성 (수입)", "💸 지출 내역", "📊 최종 결산 및 리포트"])
+tab1, tab2, tab3 = st.tabs(["💰 예산 조성 (수입)", "💸 지출 내역", "📊 최종 결산 및 AI 리포트"])
 
 # --- TAB 1: 예산 조성 ---
 with tab1:
@@ -369,7 +375,7 @@ with tab2:
             total_expense = 0
             st.info("지출 내역이 없어.")
 
-# --- TAB 3: 결산 및 리포트 ---
+# --- TAB 3: 결산 및 AI 정밀 감사 ---
 with tab3:
     st.header("⚖️ 최종 결산 대시보드")
     total_budget = current_school_budget + current_carry_over + total_student_dues
@@ -409,20 +415,61 @@ with tab3:
     col_ai, col_xls = st.columns([2, 1])
 
     with col_ai:
-        st.subheader("🤖 AI 총무 리포트")
+        st.subheader("🤖 AI 총무 정밀 감사 & 분석")
+        
         if AI_AVAILABLE:
-            if st.button("AI 분석 실행"):
-                with st.spinner("장부 분석 중..."):
-                    summary_text = f"수입: {total_budget}, 지출: {total_expense}, 잔액: {final_balance}"
-                    prompt = f"대학교 학과 학생회 총무로서 재정 상태 분석 보고서를 작성해. 데이터: {summary_text}"
-                    response = model.generate_content(prompt)
-                    st.session_state['ai_report_v3'] = response.text
-                    log_action("AI 분석", "AI 리포트 생성됨")
-                    st.success("작성 완료!")
-            if 'ai_report_v3' in st.session_state:
-                st.markdown(st.session_state['ai_report_v3'])
+            if st.button("🚨 AI 장부 정밀 감사 실행"):
+                with st.spinner("125명 국제학부 재정 데이터를 AI가 정밀 분석 중..."):
+                    # 1. 지출 내역 요약 (텍스트로 변환)
+                    exp_summary = df_expenses.to_string() if 'df_expenses' in locals() and not df_expenses.empty else "지출 내역 없음"
+                    
+                    # 2. 강력한 프롬프트: 분석 결과와 시각화 점수를 분리해서 요청
+                    prompt = f"""
+                    당신은 냉철한 대학 학생회 감사관입니다. 
+                    아래 지출 데이터를 분석하고 다음 두 가지를 출력하세요.
+
+                    1. [REPORT]: 분식회계, 중복 지출, 과다 지출 등 위험 요소가 있는지 텍스트로 보고하세요.
+                    2. [SCORES]: 항목별 '지출 위험도(0~100)'를 아래 형식으로 요약하세요. (높을수록 위험)
+                    
+                    형식 예시:
+                    [REPORT] (분석 내용...)
+                    [SCORES] 식비:20, 회식비:80, 홍보비:10
+
+                    데이터:
+                    {exp_summary} (총 예산: {total_budget})
+                    """
+                    
+                    try:
+                        response = model.generate_content(prompt)
+                        full_text = response.text
+                        
+                        # 3. 결과 파싱 (리포트와 점수 분리)
+                        report_part = full_text.split("[SCORES]")[0].replace("[REPORT]", "")
+                        score_part = full_text.split("[SCORES]")[1] if "[SCORES]" in full_text else ""
+                        
+                        st.session_state['ai_audit_report'] = report_part
+                        
+                        # 4. 차트 데이터 생성
+                        if score_part:
+                            s_dict = {k.strip(): int(v.strip()) for k, v in [i.split(':') for i in score_part.split(',')]}
+                            st.session_state['ai_risk_chart'] = pd.DataFrame(list(s_dict.items()), columns=['항목', '위험 점수'])
+                            
+                        log_action("AI 정밀 감사", "AI 감사관이 리포트와 위험도 차트를 생성함")
+                        st.success("감사 완료! 아래 결과를 확인하세요.")
+                        
+                    except Exception as e:
+                        st.error(f"분석 중 오류 발생: {e}")
+
+            # 5. 결과 화면 출력
+            if 'ai_audit_report' in st.session_state:
+                st.info("📑 AI 감사 보고서")
+                st.markdown(st.session_state['ai_audit_report'])
+                
+                if 'ai_risk_chart' in st.session_state:
+                    st.write("📊 **AI 선정 지출 위험도 분석** (높을수록 정밀 조사 필요)")
+                    st.bar_chart(st.session_state['ai_risk_chart'].set_index('항목'), color="#d33682")
         else:
-            st.warning("API 키가 없어서 AI가 쉬고 있어.")
+            st.warning("⚠️ AI 기능이 꺼져있어. (API 키 설정 필요)")
 
     with col_xls:
         st.subheader("💾 결산 자료 다운로드")
@@ -450,4 +497,4 @@ with tab3:
              st.info("💡 감사 로그 다운로드는 왼쪽 사이드바 '감사 로그 센터'를 이용해줘!")
 
 st.markdown("---")
-st.caption("System Version 3.3 | Hard Gate Security & Strict Name Policy")
+st.caption("System Version 3.4 | Powered by Gemini AI Audit & Hard Gate Security")
