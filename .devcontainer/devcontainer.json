@@ -1,33 +1,29 @@
 {
-  "name": "Python 3",
-  // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
-  "customizations": {
-    "codespaces": {
-      "openFiles": [
-        "README.md",
-        "app.py"
-      ]
+    "name": "money-manager",
+    "build": {
+        "dockerfile": "dockerfile",
+        "context": ".."
     },
-    "vscode": {
-      "settings": {},
-      "extensions": [
-        "ms-python.python",
-        "ms-python.vscode-pylance"
-      ]
-    }
-  },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
-  "postAttachCommand": {
-    "server": "streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false"
-  },
-  "portsAttributes": {
-    "8501": {
-      "label": "Application",
-      "onAutoForward": "openPreview"
-    }
-  },
-  "forwardPorts": [
-    8501
-  ]
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",              // 파이썬 언어 지원
+                "ms-python.vscode-pylance",      // 코드 인텔리전스
+                "njpwerner.autodocstring",       // 독스트링 자동 생성
+                "tamasfe.even-better-toml"      // secrets.toml 편집용
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "python.terminal.activateEnvInSelectedTerminal": true
+            }
+        }
+    },
+    // Streamlit 기본 포트인 8501을 로컬 브라우저에서 볼 수 있게 포워딩
+    "forwardPorts": [8501],
+    
+    // 컨테이너가 생성된 후 실행할 명령어 (선택 사항)
+    "postCreateCommand": "pip install -r requirements.txt",
+
+    // 컨테이너 사용자 설정 (root 권한 문제 방지)
+    "remoteUser": "root"
 }
