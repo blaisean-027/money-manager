@@ -1,46 +1,59 @@
+# app.py
 import streamlit as st
-import pandas as pd
-import google.generativeai as genai
-import database
-import receipit
 
-# [중요] 깃허브에 올릴 때 키가 노출되지 않도록 st.secrets 사용
-# 스트림릿 클라우드의 Secrets 관리자에서 'GOOGLE_API_KEY'를 가져옴
-api_key = st.secrets["GOOGLE_API_KEY"]
-analyzer = receipit.Analyzer(api_key)
-db = database.DB_Handler()
+from config import init_page, init_ai
+from db import init_db
+from security import check_rubicon_security
+from sidebar import render_sidebar
 
-st.set_page_config(page_title="회계 장부", layout="wide", page_icon="🏫")
-st.title("회계장부")
+from tabs.tab_budget import render_budget_tab
+from tabs.tab_expense import render_expense_tab
+from tabs.tab_summary import render_summary_tab
 
-col1, col2 = st.columns([1, 1])
 
-# --- 영수증 업로드 ---
-with col1:
-    st.header("영수증 업로드")
-    file = st.file_uploader("이미지 선택", type=['jpg','png','jpeg'])
+def main():
+    init_page()
+    model, ai_available = init_ai()
+    init_db()
 
-    if file:
-        st.image(file, caption="업로드된 영수증")
+    check_rubicon_security()
 
-        if st.button("데이터 저장"):
-            with st.spinner("업로드 중..."):
-                try:
-                    result = receipit.Analyzer.analyze(file)
-                    st.success("업로드 완료")
-                    st.json(result)
+    # 로그인 + 사이드바 + 프로젝트 선택
+    current_user, selected_project_name, current_project_id = render_sidebar(
+        ai_available
+    )
 
-                    db.add_row(result)
-                    st.toast("저장 완료")
-                except Exception as e:
-                    st.error(f"오류 발생 : {e}")
+    st.title(f"🏫 {selected_project_name} 통합 회계 장부")
 
-# --- 장부 조회 ---
-with col2:
-    st.header("장부 내역 조회")
+    # 일반 사용자에게만 인사 (관리자는 생략해도 됨)
+    if current_user.get("role") != "admin":
+        st.caption(
+            f"👋 안녕하세요, **{current_user.get('name')}** 학우님! 꼼꼼한 기록 부탁드려요."
+        )
 
-    if st.button("새로고침"):
-        st.rerun()
-    
-    df = db.get_all_data()
-    st.dataframe(df, use_container_width=True, height=600)
+    tab1, tab2, tab3 = st.tabs(
+        ["💰 예산 조성 (수입)", "💸 지출 내역", "📊 최종 결산 및 AI 리포트"]
+    )
+
+    with tab1:
+        total_budget, total_student_dues, df_members = render_budget_tab(
+            current_project_id
+        )
+
+    with tab2:
+        total_expense, df_expenses = render_expense_tab(current_project_id)
+
+    with tab3:
+        render_summary_tab(
+            selected_project_name=selected_project_name,
+            total_budget=total_budget,
+            total_expense=total_expense,
+            df_expenses=df_expenses,
+            df_members=df_members,
+            model=model,
+            ai_available=ai_available,
+        )
+
+
+if __name__ == "__main__":
+    main()
