@@ -16,7 +16,7 @@ def render_summary_tab(
     ai_available: bool,
 ):
     """
-    TAB3: 최종 결산 대시보드 + 시각화 + AI 감사 + 엑셀 다운로드.
+    TAB3: 최종 결산 대시보드 + 시각화 + 감사 + 엑셀 다운로드.
     """
     st.header("⚖️ 최종 결산 대시보드")
 
@@ -106,11 +106,7 @@ def render_summary_tab(
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    query_params = st.query_params
-    if query_params.get("mode") == "caesar":
-        st.info("💡 감사 로그 다운로드는 왼쪽 사이드바 '감사 로그 센터'를 이용해줘!")
-
-    st.markdown("---")
+        st.markdown("---")
     st.caption(
         "System Version 3.4 | Powered by Gemini AI Audit & Hard Gate Security"
     )
