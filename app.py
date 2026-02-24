@@ -1,14 +1,109 @@
 # app.py
+import inspect
+
+import pandas as pd
 import streamlit as st
+from importlib import import_module
 
 from config import init_page, init_ai
-from db import init_db
+from db import init_db, run_query
 from security import check_rubicon_security
 from sidebar import render_sidebar
 
-from tabs.tab_budget import render_budget_tab
-from tabs.tab_expense import render_expense_tab
-from tabs.tab_summary import render_summary_tab
+
+def _resolve_tab_renderer(module_name: str, *candidate_names: str):
+    """탭 렌더 함수 이름이 바뀐 경우를 대비한 호환 로더."""
+    module = import_module(module_name)
+    for name in candidate_names:
+        fn = getattr(module, name, None)
+        if callable(fn):
+            return fn
+    raise ImportError(
+        f"{module_name}에서 사용할 수 있는 렌더 함수를 찾지 못했습니다: {candidate_names}"
+    )
+
+
+def _call_with_supported_args(fn, **kwargs):
+    """함수가 받는 파라미터만 골라서 호출."""
+    sig = inspect.signature(fn)
+    bound = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+    # 최소 1개 positional만 받는 구버전 render(project_id) / render(project_id, user_role) 대응
+    if not bound and kwargs:
+        params = list(sig.parameters.keys())
+        if params:
+            if len(params) == 1:
+                return fn(kwargs.get("current_project_id"))
+            if len(params) >= 2:
+                return fn(kwargs.get("current_project_id"), kwargs.get("user_role"))
+
+    return fn(**bound)
+
+
+def _fallback_budget_data(current_project_id: int):
+    budget_rows = run_query(
+        "SELECT COALESCE(SUM(amount), 0) FROM budget_entries WHERE project_id = ?",
+        (current_project_id,),
+        fetch=True,
+    )
+    budget_total = int(budget_rows[0][0]) if budget_rows else 0
+
+    members_data = run_query(
+        "SELECT paid_date, name, student_id, deposit_amount, note FROM members WHERE project_id = ?",
+        (current_project_id,),
+        fetch=True,
+    )
+    df_members = (
+        pd.DataFrame(members_data, columns=["납부일", "이름", "학번", "납부액", "비고"])
+        if members_data
+        else pd.DataFrame(columns=["납부일", "이름", "학번", "납부액", "비고"])
+    )
+    total_student_dues = int(df_members["납부액"].sum()) if not df_members.empty else 0
+    return budget_total + total_student_dues, total_student_dues, df_members
+
+
+def _fallback_expense_data(current_project_id: int):
+    rows = run_query(
+        "SELECT id, date, item, amount, category FROM expenses WHERE project_id = ?",
+        (current_project_id,),
+        fetch=True,
+    )
+    if rows:
+        df = pd.DataFrame(rows, columns=["ID", "날짜", "항목", "금액", "분류"])
+        return int(df["금액"].sum()), df
+    return 0, pd.DataFrame(columns=["ID", "날짜", "항목", "금액", "분류"])
+
+
+def _normalize_budget_result(result, current_project_id: int):
+    if isinstance(result, tuple) and len(result) == 3:
+        return result
+    return _fallback_budget_data(current_project_id)
+
+
+def _normalize_expense_result(result, current_project_id: int):
+    if isinstance(result, tuple) and len(result) == 2:
+        return result
+    return _fallback_expense_data(current_project_id)
+
+
+render_budget_tab = _resolve_tab_renderer(
+    "tabs.tab_budget",
+    "render_budget_tab",
+    "render_budget",
+    "render",
+)
+render_expense_tab = _resolve_tab_renderer(
+    "tabs.tab_expense",
+    "render_expense_tab",
+    "render_expense",
+    "render",
+)
+render_summary_tab = _resolve_tab_renderer(
+    "tabs.tab_summary",
+    "render_summary_tab",
+    "render_summary",
+    "render",
+)
 
 
 def main():
@@ -16,6 +111,7 @@ def main():
     model, ai_available = init_ai()
     init_db()
 
+    # 시스템 잠금 상태는 로그인 전에도 확인
     check_rubicon_security()
 
     # 로그인 + 사이드바 + 프로젝트 선택
@@ -23,28 +119,50 @@ def main():
         ai_available
     )
 
+    # 총무(관리자) 로그인 시에만 Rubicon 컨트롤 표시
+    check_rubicon_security(current_user)
+
     st.title(f"🏫 {selected_project_name} 통합 회계 장부")
 
     # 일반 사용자에게만 인사 (관리자는 생략해도 됨)
-    if current_user.get("role") != "admin":
+    if current_user.get("role") not in {"admin", "treasurer"}:
         st.caption(
             f"👋 안녕하세요, **{current_user.get('name')}** 학우님! 꼼꼼한 기록 부탁드려요."
         )
 
     tab1, tab2, tab3 = st.tabs(
-        ["💰 예산 조성 (수입)", "💸 지출 내역", "📊 최종 결산 및 AI 리포트"]
+        ["💰 예산 조성 (수입)", "💸 지출 내역", "📊 최종 결산"]
     )
 
     with tab1:
-        total_budget, total_student_dues, df_members = render_budget_tab(
-            current_project_id
+        budget_result = _call_with_supported_args(
+            render_budget_tab,
+            current_project_id=current_project_id,
+            project_id=current_project_id,
+            user_role=current_user.get("role"),
+            current_user=current_user,
+        )
+        total_budget, total_student_dues, df_members = _normalize_budget_result(
+            budget_result,
+            current_project_id,
         )
 
     with tab2:
-        total_expense, df_expenses = render_expense_tab(current_project_id)
+        expense_result = _call_with_supported_args(
+            render_expense_tab,
+            current_project_id=current_project_id,
+            project_id=current_project_id,
+            user_role=current_user.get("role"),
+            current_user=current_user,
+        )
+        total_expense, df_expenses = _normalize_expense_result(
+            expense_result,
+            current_project_id,
+        )
 
     with tab3:
-        render_summary_tab(
+        _call_with_supported_args(
+            render_summary_tab,
             selected_project_name=selected_project_name,
             total_budget=total_budget,
             total_expense=total_expense,
@@ -52,8 +170,13 @@ def main():
             df_members=df_members,
             model=model,
             ai_available=ai_available,
+            current_project_id=current_project_id,
+            project_id=current_project_id,
+            user_role=current_user.get("role"),
+            current_user=current_user,
         )
 
 
 if __name__ == "__main__":
     main()
+
