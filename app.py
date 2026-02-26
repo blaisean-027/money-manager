@@ -12,7 +12,6 @@ from sidebar import render_sidebar
 
 
 def _resolve_tab_renderer(module_name: str, *candidate_names: str):
-    """탭 렌더 함수 이름이 바뀐 경우를 대비한 호환 로더."""
     module = import_module(module_name)
     for name in candidate_names:
         fn = getattr(module, name, None)
@@ -24,11 +23,9 @@ def _resolve_tab_renderer(module_name: str, *candidate_names: str):
 
 
 def _call_with_supported_args(fn, **kwargs):
-    """함수가 받는 파라미터만 골라서 호출."""
-    sig = inspect.signature(fn)
+    sig   = inspect.signature(fn)
     bound = {k: v for k, v in kwargs.items() if k in sig.parameters}
 
-    # 최소 1개 positional만 받는 구버전 render(project_id) / render(project_id, user_role) 대응
     if not bound and kwargs:
         params = list(sig.parameters.keys())
         if params:
@@ -88,51 +85,48 @@ def _normalize_expense_result(result, current_project_id: int):
 
 render_budget_tab = _resolve_tab_renderer(
     "tabs.tab_budget",
-    "render_budget_tab",
-    "render_budget",
-    "render",
+    "render_budget_tab", "render_budget", "render",
 )
 render_expense_tab = _resolve_tab_renderer(
     "tabs.tab_expense",
-    "render_expense_tab",
-    "render_expense",
-    "render",
+    "render_expense_tab", "render_expense", "render",
 )
 render_summary_tab = _resolve_tab_renderer(
     "tabs.tab_summary",
-    "render_summary_tab",
-    "render_summary",
-    "render",
+    "render_summary_tab", "render_summary", "render",
+)
+render_ledger_tab = _resolve_tab_renderer(
+    "tabs.tab_ledger",
+    "render_ledger_tab", "render",
 )
 
 
 def main():
     init_page()
-    model, ai_available = init_ai()
+    client, ai_available = init_ai()
     init_db()
 
-    # 시스템 잠금 상태는 로그인 전에도 확인
+    st.session_state["ai_client"] = client if ai_available else None
+
     check_rubicon_security()
 
-    # 로그인 + 사이드바 + 프로젝트 선택
-    current_user, selected_project_name, current_project_id = render_sidebar(
-        ai_available
-    )
+    current_user, selected_project_name, current_project_id = render_sidebar(ai_available)
 
-    # 총무(관리자) 로그인 시에만 Rubicon 컨트롤 표시
     check_rubicon_security(current_user)
 
     st.title(f"🏫 {selected_project_name} 통합 회계 장부")
 
-    # 일반 사용자에게만 인사 (관리자는 생략해도 됨)
     if current_user.get("role") not in {"admin", "treasurer"}:
         st.caption(
             f"👋 안녕하세요, **{current_user.get('name')}** 학우님! 꼼꼼한 기록 부탁드려요."
         )
 
-    tab1, tab2, tab3 = st.tabs(
-        ["💰 예산 조성 (수입)", "💸 지출 내역", "📊 최종 결산"]
-    )
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "💰 예산 조성 (수입)",
+        "💸 지출 내역",
+        "📊 최종 결산",
+        "📒 통합 가계부",
+    ])
 
     with tab1:
         budget_result = _call_with_supported_args(
@@ -143,8 +137,7 @@ def main():
             current_user=current_user,
         )
         total_budget, total_student_dues, df_members = _normalize_budget_result(
-            budget_result,
-            current_project_id,
+            budget_result, current_project_id,
         )
 
     with tab2:
@@ -156,8 +149,7 @@ def main():
             current_user=current_user,
         )
         total_expense, df_expenses = _normalize_expense_result(
-            expense_result,
-            current_project_id,
+            expense_result, current_project_id,
         )
 
     with tab3:
@@ -168,12 +160,18 @@ def main():
             total_expense=total_expense,
             df_expenses=df_expenses,
             df_members=df_members,
-            model=model,
+            model=client,
             ai_available=ai_available,
             current_project_id=current_project_id,
             project_id=current_project_id,
             user_role=current_user.get("role"),
             current_user=current_user,
+        )
+
+    with tab4:
+        _call_with_supported_args(
+            render_ledger_tab,
+            current_project_id=current_project_id,
         )
 
 
