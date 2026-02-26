@@ -1,0 +1,7 @@
+finance_pro_v3.db
+*.db
+.streamlit/secrets.toml
+uploads/
+__pycache__/
+*.pyc
+.env
