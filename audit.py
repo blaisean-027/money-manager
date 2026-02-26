@@ -1,4 +1,5 @@
 # audit.py
+# audit.py
 import sqlite3
 
 from streamlit.web.server.websocket_headers import _get_websocket_headers
@@ -44,4 +45,5 @@ def log_action(action: str, details: str):
             (action, details, user_mode, ip_addr, device, name),
         )
         conn.commit()
+
 
