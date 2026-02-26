@@ -1,8 +1,7 @@
 streamlit
 pandas
 openpyxl
-google-generativeai
 xlsxwriter
 Pillow
-st-gsheets-connection
-gspread
+groq
+psycopg2-binary
