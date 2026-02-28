@@ -1,6 +1,6 @@
 # app.py
-import inspect
 
+import inspect
 import pandas as pd
 import streamlit as st
 from importlib import import_module
@@ -9,7 +9,6 @@ from config import init_page, init_ai
 from db import init_db, run_query
 from security import check_rubicon_security
 from sidebar import render_sidebar
-
 
 def _resolve_tab_renderer(module_name: str, *candidate_names: str):
     module = import_module(module_name)
@@ -20,7 +19,6 @@ def _resolve_tab_renderer(module_name: str, *candidate_names: str):
     raise ImportError(
         f"{module_name}에서 사용할 수 있는 렌더 함수를 찾지 못했습니다: {candidate_names}"
     )
-
 
 def _call_with_supported_args(fn, **kwargs):
     sig   = inspect.signature(fn)
@@ -36,70 +34,61 @@ def _call_with_supported_args(fn, **kwargs):
 
     return fn(**bound)
 
-
 def _fallback_budget_data(current_project_id: int):
-    budget_rows = run_query(
-        "SELECT COALESCE(SUM(amount), 0) FROM budget_entries WHERE project_id = ?",
-        (current_project_id,),
-        fetch=True,
+    df_budget = run_query(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_entries WHERE project_id = :pid",
+        {"pid": current_project_id}, fetch=True,
     )
-    budget_total = int(budget_rows[0][0]) if budget_rows else 0
+    budget_total = int(df_budget.iloc[0]["total"]) if (df_budget is not None and not df_budget.empty) else 0
 
-    members_data = run_query(
-        "SELECT paid_date, name, student_id, deposit_amount, note FROM members WHERE project_id = ?",
-        (current_project_id,),
-        fetch=True,
+    df_members_raw = run_query(
+        "SELECT paid_date, name, student_id, deposit_amount, note FROM members WHERE project_id = :pid",
+        {"pid": current_project_id}, fetch=True,
     )
-    df_members = (
-        pd.DataFrame(members_data, columns=["납부일", "이름", "학번", "납부액", "비고"])
-        if members_data
-        else pd.DataFrame(columns=["납부일", "이름", "학번", "납부액", "비고"])
-    )
+    
+    if df_members_raw is not None and not df_members_raw.empty:
+        df_members = df_members_raw.rename(columns={
+            "paid_date": "납부일", "name": "이름", "student_id": "학번", 
+            "deposit_amount": "납부액", "note": "비고"
+        })
+    else:
+        df_members = pd.DataFrame(columns=["납부일", "이름", "학번", "납부액", "비고"])
+
     total_student_dues = int(df_members["납부액"].sum()) if not df_members.empty else 0
     return budget_total + total_student_dues, total_student_dues, df_members
 
-
 def _fallback_expense_data(current_project_id: int):
-    rows = run_query(
-        "SELECT id, date, item, amount, category FROM expenses WHERE project_id = ?",
-        (current_project_id,),
-        fetch=True,
+    df_exp = run_query(
+        "SELECT id, date, item, amount, category FROM expenses WHERE project_id = :pid",
+        {"pid": current_project_id}, fetch=True,
     )
-    if rows:
-        df = pd.DataFrame(rows, columns=["ID", "날짜", "항목", "금액", "분류"])
+    if df_exp is not None and not df_exp.empty:
+        df = df_exp.rename(columns={"id": "ID", "date": "날짜", "item": "항목", "amount": "금액", "category": "분류"})
         return int(df["금액"].sum()), df
     return 0, pd.DataFrame(columns=["ID", "날짜", "항목", "금액", "분류"])
-
 
 def _normalize_budget_result(result, current_project_id: int):
     if isinstance(result, tuple) and len(result) == 3:
         return result
     return _fallback_budget_data(current_project_id)
 
-
 def _normalize_expense_result(result, current_project_id: int):
     if isinstance(result, tuple) and len(result) == 2:
         return result
     return _fallback_expense_data(current_project_id)
 
-
 render_budget_tab = _resolve_tab_renderer(
-    "tabs.tab_budget",
-    "render_budget_tab", "render_budget", "render",
+    "tabs.tab_budget", "render_budget_tab", "render_budget", "render",
 )
 render_expense_tab = _resolve_tab_renderer(
-    "tabs.tab_expense",
-    "render_expense_tab", "render_expense", "render",
+    "tabs.tab_expense", "render_expense_tab", "render_expense", "render",
 )
 render_summary_tab = _resolve_tab_renderer(
-    "tabs.tab_summary",
-    "render_summary_tab", "render_summary", "render",
+    "tabs.tab_summary", "render_summary_tab", "render_summary", "render",
 )
 render_ledger_tab = _resolve_tab_renderer(
-    "tabs.tab_ledger",
-    "render_ledger_tab", "render",
+    "tabs.tab_ledger", "render_ledger_tab", "render",
 )
-
 
 def main():
     init_page()
@@ -174,7 +163,6 @@ def main():
             current_project_id=current_project_id,
         )
 
-
 if __name__ == "__main__":
     main()
-
+    
