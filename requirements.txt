@@ -1,6 +1,6 @@
 streamlit
 sqlalchemy
-pyodbc
+pymssql
 pandas
 openpyxl
 groq
