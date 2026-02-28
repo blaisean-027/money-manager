@@ -1,3 +1,4 @@
+# tabs/tab_ledger.py
 import pandas as pd
 import streamlit as st
 from db import get_ledger
@@ -9,7 +10,8 @@ def render_ledger_tab(current_project_id: int, **kwargs):
 
     df = get_ledger(current_project_id)
 
-    if df.empty:
+    # 데이터프레임이 비어있는지 안전하게 확인
+    if df is None or df.empty:
         st.info("아직 등록된 수입/지출 내역이 없습니다.")
         return
 
@@ -50,4 +52,4 @@ def render_ledger_tab(current_project_id: int, **kwargs):
     col1.metric("💰 총 수입", f"{total_income:,.0f}원")
     col2.metric("💸 총 지출", f"{abs(total_expense):,.0f}원")
     col3.metric("💵 현재 잔액", f"{balance:,.0f}원")
-
+    
