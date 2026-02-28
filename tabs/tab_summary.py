@@ -12,8 +12,9 @@ def render_summary_tab(
     total_expense: int,
     df_expenses: pd.DataFrame,
     df_members: pd.DataFrame,
-    model,                  # client 객체가 이 이름으로 전달됨
+    model,                  
     ai_available: bool,
+    **kwargs  # app.py에서 넘겨주는 기타 정보들을 안전하게 흡수
 ):
     """TAB3: 최종 결산 대시보드 + 시각화 + 감사 + 엑셀 다운로드."""
     st.header("⚖️ 최종 결산 대시보드")
@@ -57,14 +58,13 @@ def render_summary_tab(
 
         if ai_available and model is not None:
             if st.button("🚨 AI 장부 정밀 감사 실행"):
-                with st.spinner("125명 국제학부 재정 데이터를 AI가 정밀 분석 중..."):
+                with st.spinner("재정 데이터를 AI가 정밀 분석 중..."):
                     try:
                         report_text, risk_df = run_ai_audit(
-                            model,          # ✅ client 객체 그대로 전달
+                            model,          
                             df_expenses,
                             total_budget,
                         )
-                        # ✅ 세션에 저장 (이전 코드에서 빠져있던 부분)
                         st.session_state["ai_audit_report"] = report_text
                         st.session_state["ai_risk_chart"]   = risk_df
                         st.success("감사 완료! 아래 결과를 확인하세요.")
@@ -105,5 +105,5 @@ def render_summary_tab(
 
         st.markdown("---")
 
-    st.caption("System Version 3.5 | Powered by Gemini 2.5 Flash AI Audit & Hard Gate Security")
-
+    st.caption("System Version 3.5 | Powered by AI Audit & Hard Gate Security")
+    
