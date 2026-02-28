@@ -5,162 +5,183 @@ import hashlib
 from sqlalchemy import text
 from config import get_admin_bootstrap
 
-# ── 1. 연결 설정 ──
+# ── 1. 연결 설정 (Azure SQL용으로 이름 변경) ──
+# secrets.toml 의 [connections.sql] 설정을 자동으로 바라보게 "sql" 로만 지정
 conn = st.connection(
-    "postgresql",
+    "sql",
     type="sql",
     pool_size=5,
     max_overflow=0,
     pool_recycle=300,
-    pool_pre_ping=False,
-    connect_args={"sslmode": "require"}
+    pool_pre_ping=True
 )
 
 def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-# ── 2. DB 초기화 함수 ──
+# ── 2. DB 초기화 함수 (Azure T-SQL 문법 적용) ──
 def init_db():
     with conn.session as s:
         s.execute(text("SELECT 1"))
 
-        s.execute(text("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)"))
-        s.execute(text("INSERT INTO system_config (key, value) VALUES ('status', 'NORMAL') ON CONFLICT (key) DO NOTHING"))
+        s.execute(text("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='system_config' AND xtype='U')
+            CREATE TABLE system_config ([key] NVARCHAR(50) PRIMARY KEY, [value] NVARCHAR(MAX))
+        """))
+        s.execute(text("""
+            IF NOT EXISTS (SELECT 1 FROM system_config WHERE [key] = 'status')
+            INSERT INTO system_config ([key], [value]) VALUES ('status', 'NORMAL')
+        """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS approved_users (
-                student_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                role TEXT DEFAULT 'member',
-                status TEXT DEFAULT 'PENDING',
-                password_hash TEXT,
-                permissions TEXT,
-                security_question TEXT,
-                security_answer_hash TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='approved_users' AND xtype='U')
+            CREATE TABLE approved_users (
+                student_id NVARCHAR(50) PRIMARY KEY,
+                name NVARCHAR(100) NOT NULL,
+                role NVARCHAR(50) DEFAULT 'member',
+                status NVARCHAR(50) DEFAULT 'PENDING',
+                password_hash NVARCHAR(MAX),
+                permissions NVARCHAR(MAX),
+                security_question NVARCHAR(MAX),
+                security_answer_hash NVARCHAR(MAX),
+                created_at DATETIME DEFAULT GETDATE()
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS projects (
-                id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='projects' AND xtype='U')
+            CREATE TABLE projects (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                name NVARCHAR(200) NOT NULL UNIQUE,
+                created_at DATETIME DEFAULT GETDATE()
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS members (
-                id SERIAL PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                student_id TEXT,
-                deposit_amount INTEGER DEFAULT 0,
-                paid_date TEXT,
-                note TEXT
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='members' AND xtype='U')
+            CREATE TABLE members (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+                name NVARCHAR(100) NOT NULL,
+                student_id NVARCHAR(50),
+                deposit_amount INT DEFAULT 0,
+                paid_date NVARCHAR(50),
+                note NVARCHAR(MAX)
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS budget_entries (
-                id SERIAL PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                entry_date TEXT,
-                source_type TEXT,
-                contributor_name TEXT,
-                amount INTEGER,
-                note TEXT,
-                extra_label TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='budget_entries' AND xtype='U')
+            CREATE TABLE budget_entries (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+                entry_date NVARCHAR(50),
+                source_type NVARCHAR(50),
+                contributor_name NVARCHAR(100),
+                amount INT,
+                note NVARCHAR(MAX),
+                extra_label NVARCHAR(100),
+                created_at DATETIME DEFAULT GETDATE()
             )
         """))
-
-        s.execute(text("ALTER TABLE budget_entries ADD COLUMN IF NOT EXISTS extra_label TEXT"))
-
+        
+        # 컬럼 추가 로직 (MS SQL 방식)
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS expenses (
-                id SERIAL PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                date TEXT,
-                item TEXT,
-                amount INTEGER,
-                category TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            IF COL_LENGTH('budget_entries', 'extra_label') IS NULL
+            ALTER TABLE budget_entries ADD extra_label NVARCHAR(100)
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS reset_logs (
-                id SERIAL PRIMARY KEY,
-                student_id TEXT,
-                name TEXT,
-                reset_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                reset_by TEXT,
-                is_read INTEGER DEFAULT 0
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='expenses' AND xtype='U')
+            CREATE TABLE expenses (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+                date NVARCHAR(50),
+                item NVARCHAR(200),
+                amount INT,
+                category NVARCHAR(100),
+                created_at DATETIME DEFAULT GETDATE()
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS receipt_images (
-                id SERIAL PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                expense_id INTEGER REFERENCES expenses(id) ON DELETE CASCADE,
-                filename TEXT,
-                filepath TEXT,
-                description TEXT,
-                uploaded_by TEXT,
-                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='reset_logs' AND xtype='U')
+            CREATE TABLE reset_logs (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                student_id NVARCHAR(50),
+                name NVARCHAR(100),
+                reset_at DATETIME DEFAULT GETDATE(),
+                reset_by NVARCHAR(50),
+                is_read INT DEFAULT 0
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id SERIAL PRIMARY KEY,
-                code TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                type TEXT NOT NULL
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='receipt_images' AND xtype='U')
+            CREATE TABLE receipt_images (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+                expense_id INT REFERENCES expenses(id) ON DELETE CASCADE,
+                filename NVARCHAR(MAX),
+                filepath NVARCHAR(MAX),
+                description NVARCHAR(MAX),
+                uploaded_by NVARCHAR(100),
+                uploaded_at DATETIME DEFAULT GETDATE()
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS journal_entries (
-                id SERIAL PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                tx_date TEXT,
-                description TEXT,
-                source_kind TEXT,
-                created_by TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='accounts' AND xtype='U')
+            CREATE TABLE accounts (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                code NVARCHAR(50) UNIQUE NOT NULL,
+                name NVARCHAR(100) NOT NULL,
+                type NVARCHAR(50) NOT NULL
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS journal_lines (
-                id SERIAL PRIMARY KEY,
-                journal_entry_id INTEGER REFERENCES journal_entries(id) ON DELETE CASCADE,
-                account_id INTEGER REFERENCES accounts(id),
-                debit INTEGER DEFAULT 0,
-                credit INTEGER DEFAULT 0,
-                memo TEXT
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='journal_entries' AND xtype='U')
+            CREATE TABLE journal_entries (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+                tx_date NVARCHAR(50),
+                description NVARCHAR(MAX),
+                source_kind NVARCHAR(50),
+                created_by NVARCHAR(100),
+                created_at DATETIME DEFAULT GETDATE()
             )
         """))
 
         s.execute(text("""
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id SERIAL PRIMARY KEY,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                action TEXT,
-                details TEXT,
-                user_mode TEXT,
-                ip_address TEXT,
-                device_info TEXT,
-                operator_name TEXT
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='journal_lines' AND xtype='U')
+            CREATE TABLE journal_lines (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                journal_entry_id INT REFERENCES journal_entries(id) ON DELETE CASCADE,
+                account_id INT REFERENCES accounts(id),
+                debit INT DEFAULT 0,
+                credit INT DEFAULT 0,
+                memo NVARCHAR(MAX)
+            )
+        """))
+
+        s.execute(text("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='audit_logs' AND xtype='U')
+            CREATE TABLE audit_logs (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                timestamp DATETIME DEFAULT GETDATE(),
+                action NVARCHAR(100),
+                details NVARCHAR(MAX),
+                user_mode NVARCHAR(50),
+                ip_address NVARCHAR(100),
+                device_info NVARCHAR(MAX),
+                operator_name NVARCHAR(100)
             )
         """))
 
         s.commit()
 
-    # ── 계정 코드 시드 데이터 ──
+    # ── 계정 코드 시드 데이터 (IF NOT EXISTS로 변경) ──
     account_seed = [
         ("1100", "Cash_Operating", "ASSET"),
         ("1110", "Cash_Reserve", "ASSET"),
@@ -173,11 +194,14 @@ def init_db():
     ]
     for code, name, acc_type in account_seed:
         run_query(
-            "INSERT INTO accounts (code, name, type) VALUES (:code, :name, :type) ON CONFLICT (code) DO NOTHING",
+            """
+            IF NOT EXISTS (SELECT 1 FROM accounts WHERE code = :code)
+            INSERT INTO accounts (code, name, type) VALUES (:code, :name, :type)
+            """,
             {"code": code, "name": name, "type": acc_type}
         )
 
-    # ── 관리자 계정 자동 생성 ──
+    # ── 관리자 계정 자동 생성 (MERGE 대신 IF/ELSE 구조 사용) ──
     admin_sid, admin_name, admin_password = get_admin_bootstrap()
     admin_password_hash = _hash_password(admin_password) if admin_password else None
     admin_permissions = json.dumps([
@@ -186,10 +210,13 @@ def init_db():
     ])
 
     run_query("""
-        INSERT INTO approved_users (student_id, name, role, status, password_hash, permissions)
-        VALUES (:sid, :name, 'treasurer', 'APPROVED', :pw, :perm)
-        ON CONFLICT (student_id) DO UPDATE
-        SET name = EXCLUDED.name, password_hash = EXCLUDED.password_hash, permissions = EXCLUDED.permissions
+        IF EXISTS (SELECT 1 FROM approved_users WHERE student_id = :sid)
+            UPDATE approved_users
+            SET name = :name, password_hash = :pw, permissions = :perm
+            WHERE student_id = :sid
+        ELSE
+            INSERT INTO approved_users (student_id, name, role, status, password_hash, permissions)
+            VALUES (:sid, :name, 'treasurer', 'APPROVED', :pw, :perm)
     """, {"sid": admin_sid, "name": admin_name, "pw": admin_password_hash, "perm": admin_permissions})
 
 # ── 3. 데이터 조작 함수 ──
@@ -212,17 +239,17 @@ def get_all_data(table_name: str) -> pd.DataFrame:
         return pd.DataFrame()
     return conn.query(f"SELECT * FROM {table_name}", ttl=30)
 
-# ── 4. 장부 조회 함수 ──
+# ── 4. 장부 조회 함수 (CONCAT 적용) ──
 def get_ledger(project_id: int) -> pd.DataFrame:
     query = """
         SELECT entry_date AS transaction_date, created_at AS recorded_at, '수입' AS type,
-        CASE source_type WHEN 'student_dues' THEN contributor_name || ' 회비'
-        ELSE COALESCE(contributor_name, '') || ' ' || COALESCE(note, '') END AS description,
+        CASE source_type WHEN 'student_dues' THEN CONCAT(contributor_name, ' 회비')
+        ELSE CONCAT(ISNULL(contributor_name, ''), ' ', ISNULL(note, '')) END AS description,
         amount AS amount
         FROM budget_entries WHERE project_id = :pid
         UNION ALL
         SELECT date AS transaction_date, created_at AS recorded_at, '지출' AS type,
-        item || ' (' || COALESCE(category, '기타') || ')' AS description,
+        CONCAT(item, ' (', ISNULL(category, '기타'), ')') AS description,
         -amount AS amount
         FROM expenses WHERE project_id = :pid
         ORDER BY transaction_date ASC, recorded_at ASC
