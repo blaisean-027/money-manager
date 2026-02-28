@@ -1,7 +1,8 @@
 streamlit
+sqlalchemy
+psycopg2-binary
 pandas
 openpyxl
-xlsxwriter
-Pillow
 groq
-psycopg2-binary
+pillow
+xlsxwriter
