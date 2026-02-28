@@ -1,12 +1,7 @@
 # audit.py
-# audit.py
-import sqlite3
-
-from streamlit.web.server.websocket_headers import _get_websocket_headers
 import streamlit as st
-
-from config import DB_FILE
-
+from streamlit.web.server.websocket_headers import _get_websocket_headers
+from db import run_query
 
 def get_user_info():
     """사용자의 IP와 기기 정보를 추출."""
@@ -17,7 +12,6 @@ def get_user_info():
         return ip, user_agent
     except Exception:
         return "Unknown IP", "Unknown Device"
-
 
 def log_action(action: str, details: str):
     """중요 행동을 DB에 기록."""
@@ -32,18 +26,22 @@ def log_action(action: str, details: str):
 
     ip_addr, device = get_user_info()
 
-    with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute(
-            """
-            INSERT INTO audit_logs (
-                action, details, user_mode,
-                ip_address, device_info, operator_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (action, details, user_mode, ip_addr, device, name),
+    # run_query 하나로 깔끔하게 처리!
+    run_query(
+        """
+        INSERT INTO audit_logs (
+            action, details, user_mode,
+            ip_address, device_info, operator_name
         )
-        conn.commit()
-
-
+        VALUES (:action, :details, :user_mode, :ip, :device, :name)
+        """,
+        {
+            "action": action, 
+            "details": details, 
+            "user_mode": user_mode, 
+            "ip": ip_addr, 
+            "device": device, 
+            "name": name
+        }
+    )
+    
