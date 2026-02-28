@@ -1,5 +1,3 @@
-# app.py
-
 import inspect
 import pandas as pd
 import streamlit as st
@@ -16,13 +14,16 @@ def _resolve_tab_renderer(module_name: str, *candidate_names: str):
         fn = getattr(module, name, None)
         if callable(fn):
             return fn
-    raise ImportError(
-        f"{module_name}에서 사용할 수 있는 렌더 함수를 찾지 못했습니다: {candidate_names}"
-    )
+    raise ImportError(f"{module_name}에서 사용할 수 있는 렌더 함수를 찾지 못했습니다: {candidate_names}")
 
 def _call_with_supported_args(fn, **kwargs):
-    sig   = inspect.signature(fn)
+    sig = inspect.signature(fn)
     bound = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+    # **kwargs 파라미터가 있으면 전부 넘기기
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return fn(**kwargs)
 
     if not bound and kwargs:
         params = list(sig.parameters.keys())
@@ -45,10 +46,9 @@ def _fallback_budget_data(current_project_id: int):
         "SELECT paid_date, name, student_id, deposit_amount, note FROM members WHERE project_id = :pid",
         {"pid": current_project_id}, fetch=True,
     )
-    
     if df_members_raw is not None and not df_members_raw.empty:
         df_members = df_members_raw.rename(columns={
-            "paid_date": "납부일", "name": "이름", "student_id": "학번", 
+            "paid_date": "납부일", "name": "이름", "student_id": "학번",
             "deposit_amount": "납부액", "note": "비고"
         })
     else:
@@ -106,9 +106,7 @@ def main():
     st.title(f"🏫 {selected_project_name} 통합 회계 장부")
 
     if current_user.get("role") not in {"admin", "treasurer"}:
-        st.caption(
-            f"👋 안녕하세요, **{current_user.get('name')}** 학우님! 꼼꼼한 기록 부탁드려요."
-        )
+        st.caption(f"👋 안녕하세요, **{current_user.get('name')}** 학우님! 꼼꼼한 기록 부탁드려요.")
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "💰 예산 조성 (수입)",
@@ -165,4 +163,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
