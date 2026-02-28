@@ -1,27 +1,79 @@
-import pandas as pd
-import streamlit as st
+import os
 import json
 import hashlib
-from sqlalchemy import text
+import urllib.parse
+
+import pandas as pd
+import streamlit as st
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from config import get_admin_bootstrap
 
-# ── 1. 연결 설정 (Azure SQL용으로 이름 변경) ──
-# secrets.toml 의 [connections.sql] 설정을 자동으로 바라보게 "sql" 로만 지정
-conn = st.connection(
-    "sql",
-    type="sql",
-    pool_size=5,
-    max_overflow=0,
-    pool_recycle=300,
-    pool_pre_ping=True
-)
+# ── 1. 연결 설정 (Azure SQL 우선) ──
+def _secret_get(*keys, default=None):
+    """st.secrets / 환경변수에서 순차 조회"""
+    for key in keys:
+        try:
+            if key in st.secrets:
+                return st.secrets[key]
+        except Exception:
+            pass
+        val = os.getenv(key)
+        if val:
+            return val
+    return default
+
+def _build_sqlalchemy_url() -> str:
+    # 1) 완성 URL이 있으면 최우선 사용
+    direct_url = _secret_get("SQLALCHEMY_DATABASE_URI", "DATABASE_URL", "AZURE_SQL_URL")
+    if direct_url:
+        return direct_url
+
+    # 2) streamlit [connections.sql] 포맷 사용 시도
+    try:
+        if "connections" in st.secrets and "sql" in st.secrets["connections"]:
+            cfg = st.secrets["connections"]["sql"]
+            if "url" in cfg:
+                return cfg["url"]
+    except Exception:
+        pass
+
+    # 3) 개별 값으로 Azure SQL URL 조립
+    server = _secret_get("AZURE_SQL_SERVER", "DB_HOST")
+    database = _secret_get("AZURE_SQL_DATABASE", "DB_NAME")
+    username = _secret_get("AZURE_SQL_USER", "DB_USER")
+    password = _secret_get("AZURE_SQL_PASSWORD", "DB_PASSWORD")
+    port = _secret_get("AZURE_SQL_PORT", "DB_PORT", default="1433")
+
+    if not all([server, database, username, password]):
+        raise RuntimeError(
+            "DB 접속 정보가 없습니다. secrets 또는 환경변수에 SQLALCHEMY_DATABASE_URI(권장) "
+            "또는 AZURE_SQL_SERVER/AZURE_SQL_DATABASE/AZURE_SQL_USER/AZURE_SQL_PASSWORD를 설정하세요."
+        )
+
+    quoted_password = urllib.parse.quote_plus(password)
+    return f"mssql+pymssql://{username}:{quoted_password}@{server}:{port}/{database}"
+
+@st.cache_resource(show_spinner=False)
+def _get_engine() -> Engine:
+    db_url = _build_sqlalchemy_url()
+    return create_engine(
+        db_url,
+        pool_size=5,
+        max_overflow=0,
+        pool_recycle=300,
+        pool_pre_ping=True,
+        pool_timeout=30,
+        connect_args={"login_timeout": 30, "timeout": 30} if db_url.startswith("mssql+pymssql") else {},
+    )
 
 def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 # ── 2. DB 초기화 함수 (Azure T-SQL 문법 적용) ──
 def init_db():
-    with conn.session as s:
+    engine = _get_engine()
+    with engine.begin() as s:
         s.execute(text("SELECT 1"))
 
         s.execute(text("""
@@ -179,8 +231,6 @@ def init_db():
             )
         """))
 
-        s.commit()
-
     # ── 계정 코드 시드 데이터 (IF NOT EXISTS로 변경) ──
     account_seed = [
         ("1100", "Cash_Operating", "ASSET"),
@@ -222,13 +272,15 @@ def init_db():
 # ── 3. 데이터 조작 함수 ──
 def run_query(query: str, params=None, fetch: bool = False):
     try:
-        if fetch:
-            return conn.query(query, params=params, ttl=30)
-        else:
-            with conn.session as s:
-                s.execute(text(query), params)
-                s.commit()
-            st.cache_data.clear()
+        engine = _get_engine()
+        stmt = text(query)
+        with engine.begin() as db:
+            if fetch:
+                result = db.execute(stmt, params or {})
+                return pd.DataFrame(result.fetchall(), columns=result.keys())
+            db.execute(stmt, params or {})
+        st.cache_data.clear()
+        return None
     except Exception as e:
         st.error(f"❌ DB 에러: {e}")
         return None
@@ -237,7 +289,7 @@ def get_all_data(table_name: str) -> pd.DataFrame:
     allowed = {"projects", "members", "budget_entries", "expenses", "approved_users"}
     if table_name not in allowed:
         return pd.DataFrame()
-    return conn.query(f"SELECT * FROM {table_name}", ttl=30)
+    return run_query(f"SELECT * FROM {table_name}", fetch=True)
 
 # ── 4. 장부 조회 함수 (CONCAT 적용) ──
 def get_ledger(project_id: int) -> pd.DataFrame:
@@ -254,4 +306,4 @@ def get_ledger(project_id: int) -> pd.DataFrame:
         FROM expenses WHERE project_id = :pid
         ORDER BY transaction_date ASC, recorded_at ASC
     """
-    return conn.query(query, params={"pid": project_id}, ttl=30)
+    return run_query(query, {"pid": project_id}, fetch=True)
