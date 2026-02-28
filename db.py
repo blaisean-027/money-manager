@@ -1,4 +1,4 @@
-import os
+iimport os
 import json
 import hashlib
 import urllib.parse
@@ -33,8 +33,21 @@ def _build_sqlalchemy_url() -> str:
     try:
         if "connections" in st.secrets and "sql" in st.secrets["connections"]:
             cfg = st.secrets["connections"]["sql"]
-            if "url" in cfg:
+            if "url" in cfg and cfg["url"]:
                 return cfg["url"]
+
+            # url 없이 개별 필드(host/user/password/database)가 들어온 경우도 지원
+            host = cfg.get("host") or cfg.get("server")
+            database = cfg.get("database") or cfg.get("db")
+            username = cfg.get("username") or cfg.get("user")
+            password = cfg.get("password")
+            port = cfg.get("port", 1433)
+            dialect = cfg.get("dialect", "mssql")
+            driver = cfg.get("driver", "pymssql")
+
+            if all([host, database, username, password]) and dialect == "mssql":
+                quoted_password = urllib.parse.quote_plus(str(password))
+                return f"mssql+{driver}://{username}:{quoted_password}@{host}:{port}/{database}"
     except Exception:
         pass
 
@@ -66,6 +79,21 @@ def _get_engine() -> Engine:
         pool_timeout=30,
         connect_args={"login_timeout": 30, "timeout": 30} if db_url.startswith("mssql+pymssql") else {},
     )
+
+class _CompatConn:
+    """기존 `conn.session` / `conn.query` 호출을 유지하기 위한 호환 래퍼."""
+
+    @property
+    def session(self):
+        return _get_engine().connect()
+
+    def query(self, query: str, params=None, ttl: int = 30):
+        _ = ttl  # streamlit connection API 호환용 (미사용)
+        return run_query(query, params=params, fetch=True)
+
+
+# 과거 코드 호환을 위해 `conn` 심볼 유지
+conn = _CompatConn()
 
 def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
