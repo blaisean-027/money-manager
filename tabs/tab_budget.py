@@ -1,22 +1,17 @@
 # tabs/tab_budget.py
 import datetime
-import sqlite3
 import pandas as pd
 import streamlit as st
 
 from audit import log_action
-from config import DB_FILE
 from db import run_query
 from accounting.service import record_income_entry
-
 
 INCOME_TYPE_LABELS = {
     "school_budget": "학교/학과 지원금",
     "reserve_fund": "예비비/이월금(외부 유입)",
-    # ✅ 라벨을 '과잠' 고정이 아니라 회수/정산 전반으로 넓힘
     "reserve_recovery": "회수/정산(예비비 복구 등)",
 }
-
 
 def _to_int_amount(value) -> int:
     try:
@@ -24,21 +19,9 @@ def _to_int_amount(value) -> int:
     except Exception:
         return 0
 
-
 def _ensure_budget_entries_extra_label_column():
-    """
-    budget_entries 테이블에 extra_label 컬럼이 없으면 자동 추가.
-    (사용자 입장: 따로 마이그레이션 안 해도 그냥 기능이 켜짐)
-    """
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute("PRAGMA foreign_keys = ON;")
-        cols = conn.execute("PRAGMA table_info(budget_entries)").fetchall()
-        col_names = {c[1] for c in cols}  # (cid, name, type, notnull, dflt_value, pk)
-
-        if "extra_label" not in col_names:
-            conn.execute("ALTER TABLE budget_entries ADD COLUMN extra_label TEXT DEFAULT ''")
-            conn.commit()
-
+    """PostgreSQL에서는 마이그레이션이 필요 없으므로 패스하거나 별도 처리"""
+    pass
 
 def _compose_type_label(source_type: str, extra_label: str) -> str:
     base = INCOME_TYPE_LABELS.get(source_type, source_type)
@@ -47,9 +30,7 @@ def _compose_type_label(source_type: str, extra_label: str) -> str:
         return base
     return f"{base} - {extra}"
 
-
-def render_budget_tab(current_project_id: int):
-    # ✅ 스키마 자동 보정
+def render_budget_tab(current_project_id: int, **kwargs):
     _ensure_budget_entries_extra_label_column()
 
     st.subheader("1️⃣ 예산/예비비 입력")
@@ -66,7 +47,6 @@ def render_budget_tab(current_project_id: int):
                 format_func=lambda x: INCOME_TYPE_LABELS.get(x, x),
             )
 
-            # ✅ +알파 자유 입력
             extra_label = st.text_input(
                 "추가 항목 (+알파, 선택)",
                 placeholder="예: 24학번 홍길동 과잠비 / MT 회수 / 행사 후원금 등",
@@ -90,32 +70,24 @@ def render_budget_tab(current_project_id: int):
                     """
                     INSERT INTO budget_entries
                     (project_id, entry_date, source_type, contributor_name, amount, note, extra_label)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (:pid, :date, :type, :name, :amount, :note, :extra)
                     """,
-                    (
-                        current_project_id,
-                        tx_date,
-                        income_type,
-                        contributor_name.strip(),
-                        amount_i,
-                        note.strip(),
-                        extra_label.strip(),
-                    ),
+                    {
+                        "pid": current_project_id, "date": tx_date, "type": income_type,
+                        "name": contributor_name.strip(), "amount": amount_i,
+                        "note": note.strip(), "extra": extra_label.strip()
+                    }
                 )
 
-                with sqlite3.connect(DB_FILE) as conn:
-                    conn.execute("PRAGMA foreign_keys = ON;")
-                    record_income_entry(
-                        conn,
-                        project_id=current_project_id,
-                        tx_date=tx_date,
-                        source_type=income_type,
-                        actor_name=contributor_name.strip(),
-                        amount=amount_i,
-                        note=note.strip(),
-                        extra_label=extra_label.strip(),  # ✅ 회계 분개에도 반영
-                    )
-                    conn.commit()
+                record_income_entry(
+                    project_id=current_project_id,
+                    tx_date=tx_date,
+                    source_type=income_type,
+                    actor_name=contributor_name.strip(),
+                    amount=amount_i,
+                    note=note.strip(),
+                    extra_label=extra_label.strip(),
+                )
 
                 pretty_type = _compose_type_label(income_type, extra_label)
                 log_action(
@@ -126,32 +98,27 @@ def render_budget_tab(current_project_id: int):
                 st.rerun()
 
     with col_budget_table:
-        budget_rows = run_query(
+        df_budget_raw = run_query(
             """
-            SELECT entry_date, source_type, contributor_name, amount, note, COALESCE(extra_label,'')
+            SELECT entry_date, source_type, contributor_name, amount, note, COALESCE(extra_label,'') AS extra_label
             FROM budget_entries
-            WHERE project_id = ?
+            WHERE project_id = :pid
             ORDER BY entry_date DESC, id DESC
             """,
-            (current_project_id,),
+            {"pid": current_project_id},
             fetch=True,
         )
 
-        if budget_rows:
-            df_budget = pd.DataFrame(
-                budget_rows,
-                columns=["입금일", "구분", "입금자", "금액", "비고", "추가항목"],
-            )
-
-            # ✅ "구분"을 기본라벨 + +알파로 표시(수기 장부 느낌)
+        if df_budget_raw is not None and not df_budget_raw.empty:
+            df_budget = df_budget_raw.rename(columns={
+                "entry_date": "입금일", "source_type": "구분", "contributor_name": "입금자",
+                "amount": "금액", "note": "비고", "extra_label": "추가항목"
+            })
             df_budget["구분"] = df_budget.apply(
                 lambda r: _compose_type_label(str(r["구분"]), str(r["추가항목"])),
                 axis=1,
             )
-
-            # "추가항목" 컬럼은 굳이 따로 보여줄 필요 없으면 숨김
             df_budget = df_budget.drop(columns=["추가항목"])
-
             st.dataframe(df_budget, use_container_width=True, hide_index=True)
         else:
             df_budget = pd.DataFrame(columns=["입금일", "구분", "입금자", "금액", "비고"])
@@ -179,33 +146,27 @@ def render_budget_tab(current_project_id: int):
             else:
                 tx_date = paid_date.strftime("%Y-%m-%d")
                 amount_i = _to_int_amount(m_amt)
+                
                 run_query(
                     """
                     INSERT INTO members (project_id, name, student_id, deposit_amount, paid_date, note)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (:pid, :name, :sid, :amount, :date, :note)
                     """,
-                    (
-                        current_project_id,
-                        m_name.strip(),
-                        m_sid.strip(),
-                        amount_i,
-                        tx_date,
-                        m_note.strip(),
-                    ),
+                    {
+                        "pid": current_project_id, "name": m_name.strip(), "sid": m_sid.strip(),
+                        "amount": amount_i, "date": tx_date, "note": m_note.strip()
+                    }
                 )
-                with sqlite3.connect(DB_FILE) as conn:
-                    conn.execute("PRAGMA foreign_keys = ON;")
-                    record_income_entry(
-                        conn,
-                        project_id=current_project_id,
-                        tx_date=tx_date,
-                        source_type="student_dues",
-                        actor_name=m_name.strip(),
-                        amount=amount_i,
-                        note=m_note.strip(),
-                        extra_label="",  # 학생회비는 보통 추가항목 필요 없어서 빈 값
-                    )
-                    conn.commit()
+                
+                record_income_entry(
+                    project_id=current_project_id,
+                    tx_date=tx_date,
+                    source_type="student_dues",
+                    actor_name=m_name.strip(),
+                    amount=amount_i,
+                    note=m_note.strip(),
+                    extra_label="",
+                )
 
                 log_action(
                     "학생회비 등록",
@@ -215,20 +176,22 @@ def render_budget_tab(current_project_id: int):
                 st.rerun()
 
     with col_member_table:
-        members_data = run_query(
+        df_members_raw = run_query(
             """
             SELECT paid_date, name, student_id, deposit_amount, note
             FROM members
-            WHERE project_id = ?
+            WHERE project_id = :pid
             ORDER BY paid_date DESC, id DESC
             """,
-            (current_project_id,),
+            {"pid": current_project_id},
             fetch=True,
         )
-        if members_data:
-            df_members = pd.DataFrame(
-                members_data, columns=["납부일", "이름", "학번", "납부액", "비고"]
-            )
+        
+        if df_members_raw is not None and not df_members_raw.empty:
+            df_members = df_members_raw.rename(columns={
+                "paid_date": "납부일", "name": "이름", "student_id": "학번",
+                "deposit_amount": "납부액", "note": "비고"
+            })
             st.dataframe(df_members, use_container_width=True, hide_index=True)
             total_student_dues = int(df_members["납부액"].sum())
         else:
@@ -236,18 +199,17 @@ def render_budget_tab(current_project_id: int):
             df_members = pd.DataFrame(columns=["납부일", "이름", "학번", "납부액", "비고"])
             total_student_dues = 0
 
-    school_budget_total_row = run_query(
-        "SELECT COALESCE(SUM(amount), 0) FROM budget_entries WHERE project_id = ? AND source_type = 'school_budget'",
-        (current_project_id,),
-        fetch=True,
+    df_school_raw = run_query(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_entries WHERE project_id = :pid AND source_type = 'school_budget'",
+        {"pid": current_project_id}, fetch=True
     )
-    reserve_total_row = run_query(
-        "SELECT COALESCE(SUM(amount), 0) FROM budget_entries WHERE project_id = ? AND source_type IN ('reserve_fund','reserve_recovery')",
-        (current_project_id,),
-        fetch=True,
+    school_budget_total = int(df_school_raw.iloc[0]["total"]) if (df_school_raw is not None and not df_school_raw.empty) else 0
+
+    df_reserve_raw = run_query(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_entries WHERE project_id = :pid AND source_type IN ('reserve_fund','reserve_recovery')",
+        {"pid": current_project_id}, fetch=True
     )
-    school_budget_total = int(school_budget_total_row[0][0]) if school_budget_total_row else 0
-    reserve_total = int(reserve_total_row[0][0]) if reserve_total_row else 0
+    reserve_total = int(df_reserve_raw.iloc[0]["total"]) if (df_reserve_raw is not None and not df_reserve_raw.empty) else 0
 
     st.markdown("### 📊 총 수입 요약")
     total_budget = school_budget_total + reserve_total + total_student_dues
