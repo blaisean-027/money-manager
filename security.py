@@ -67,37 +67,41 @@ SECURITY_QUESTIONS = [
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-
 def verify_password(password: str, password_hash: str) -> bool:
     if not password_hash:
         return False
     return hmac.compare_digest(hash_password(password), password_hash)
 
-
 def _hash_answer(answer: str) -> str:
     return hashlib.sha256(answer.strip().lower().encode("utf-8")).hexdigest()
-
 
 def _normalize_role(role: str) -> str:
     if role in {"admin", "총무"}:
         return "treasurer"
     return role or "member"
 
-
 def _is_quota_full(role: str, statuses=("PENDING", "APPROVED")) -> bool:
     role = _normalize_role(role)
     limit = ROLE_LIMITS.get(role)
     if limit is None:
         return False
-    placeholders = ", ".join("?" for _ in statuses)
-    rows = run_query(
-        f"SELECT COUNT(*) FROM approved_users WHERE role = ? AND status IN ({placeholders})",
-        (role, *statuses),
+    
+    # PostgreSQL 파라미터 생성 로직
+    params = {"role": role}
+    status_conds = []
+    for i, s in enumerate(statuses):
+        k = f"s{i}"
+        status_conds.append(f":{k}")
+        params[k] = s
+    placeholders = ", ".join(status_conds)
+    
+    df = run_query(
+        f"SELECT COUNT(*) AS cnt FROM approved_users WHERE role = :role AND status IN ({placeholders})",
+        params,
         fetch=True,
     )
-    count = rows[0][0] if rows else 0
+    count = int(df.iloc[0]["cnt"]) if (df is not None and not df.empty) else 0
     return count >= limit
-
 
 def _parse_permissions(permissions_json: str, role: str) -> list:
     try:
@@ -107,7 +111,6 @@ def _parse_permissions(permissions_json: str, role: str) -> list:
         pass
     return DEFAULT_PERMISSIONS.get(_normalize_role(role), ["can_view"])
 
-
 def _gen_temp_password(length: int = 8) -> str:
     chars = string.ascii_letters + string.digits
     return "".join(random.choices(chars, k=length))
@@ -115,15 +118,17 @@ def _gen_temp_password(length: int = 8) -> str:
 
 # ── 인증 ─────────────────────────────────────────────────────────────────────
 def authenticate_user(name, student_id, password=""):
-    row = run_query(
-        "SELECT role, status, password_hash, permissions FROM approved_users WHERE name = ? AND student_id = ?",
-        (name, student_id),
+    df = run_query(
+        "SELECT role, status, password_hash, permissions FROM approved_users WHERE name = :name AND student_id = :sid",
+        {"name": name, "sid": student_id},
         fetch=True,
     )
-    if not row:
+    if df is None or df.empty:
         return None, "not_found"
 
-    role, status, password_hash, permissions_json = row[0]
+    row = df.iloc[0]
+    role, status, password_hash, permissions_json = row["role"], row["status"], row["password_hash"], row["permissions"]
+    
     role        = _normalize_role(role)
     permissions = _parse_permissions(permissions_json, role)
 
@@ -142,23 +147,23 @@ def authenticate_user(name, student_id, password=""):
 
 
 def is_user_approved(name, student_id):
-    res = run_query(
-        "SELECT status FROM approved_users WHERE name = ? AND student_id = ?",
-        (name, student_id),
+    df = run_query(
+        "SELECT status FROM approved_users WHERE name = :name AND student_id = :sid",
+        {"name": name, "sid": student_id},
         fetch=True,
     )
-    return bool(res and res[0][0] == "APPROVED")
+    return bool(df is not None and not df.empty and df.iloc[0]["status"] == "APPROVED")
 
 
 def request_access(name, student_id, role="member", security_question="", security_answer=""):
     role = _normalize_role(role)
 
-    existing = run_query(
-        "SELECT name, status FROM approved_users WHERE student_id = ?",
-        (student_id,),
+    df_existing = run_query(
+        "SELECT name, status FROM approved_users WHERE student_id = :sid",
+        {"sid": student_id},
         fetch=True,
     )
-    if existing:
+    if df_existing is not None and not df_existing.empty:
         return False, "already_exists"
 
     if _is_quota_full(role, statuses=("PENDING", "APPROVED")):
@@ -170,17 +175,17 @@ def request_access(name, student_id, role="member", security_question="", securi
         """
         INSERT INTO approved_users
             (name, student_id, role, status, security_question, security_answer_hash)
-        VALUES (?, ?, ?, 'PENDING', ?, ?)
+        VALUES (:name, :sid, :role, 'PENDING', :sq, :sah)
         """,
-        (name, student_id, role, security_question or None, answer_hash),
+        {"name": name, "sid": student_id, "role": role, "sq": security_question or None, "sah": answer_hash},
     )
 
-    created = run_query(
-        "SELECT 1 FROM approved_users WHERE student_id = ? AND name = ? AND status = 'PENDING'",
-        (student_id, name),
+    df_created = run_query(
+        "SELECT 1 FROM approved_users WHERE student_id = :sid AND name = :name AND status = 'PENDING'",
+        {"sid": student_id, "name": name},
         fetch=True,
     )
-    return bool(created), None
+    return bool(df_created is not None and not df_created.empty), None
 
 
 # ── 비밀번호 찾기 ─────────────────────────────────────────────────────────────
@@ -196,25 +201,25 @@ def render_password_reset_ui():
             if not r_name or not r_sid:
                 st.error("이름과 학번을 입력해주세요.")
             else:
-                row = run_query(
+                df = run_query(
                     """
                     SELECT security_question, security_answer_hash
                     FROM approved_users
-                    WHERE name = ? AND student_id = ? AND status = 'APPROVED'
+                    WHERE name = :name AND student_id = :sid AND status = 'APPROVED'
                     """,
-                    (r_name, r_sid),
+                    {"name": r_name, "sid": r_sid},
                     fetch=True,
                 )
-                if not row:
+                if df is None or df.empty:
                     st.error("❌ 등록된 계정이 없습니다.")
-                elif not row[0][0]:
+                elif not df.iloc[0]["security_question"]:
                     st.error("❌ 보안 질문이 설정되지 않았습니다. 총무에게 문의하세요.")
                 else:
                     st.session_state["reset_step"]        = 2
                     st.session_state["reset_target_sid"]  = r_sid
                     st.session_state["reset_target_name"] = r_name
-                    st.session_state["reset_question"]    = row[0][0]
-                    st.session_state["reset_ans_hash"]    = row[0][1]
+                    st.session_state["reset_question"]    = df.iloc[0]["security_question"]
+                    st.session_state["reset_ans_hash"]    = df.iloc[0]["security_answer_hash"]
                     st.rerun()
 
     elif step == 2:
@@ -259,12 +264,12 @@ def render_password_reset_ui():
                 sid  = st.session_state.get("reset_target_sid")
                 name = st.session_state.get("reset_target_name")
                 run_query(
-                    "UPDATE approved_users SET password_hash = ? WHERE student_id = ?",
-                    (hash_password(new_pw), sid),
+                    "UPDATE approved_users SET password_hash = :ph WHERE student_id = :sid",
+                    {"ph": hash_password(new_pw), "sid": sid},
                 )
                 run_query(
-                    "INSERT INTO reset_logs (student_id, name, reset_by) VALUES (?, ?, 'self')",
-                    (sid, name),
+                    "INSERT INTO reset_logs (student_id, name, reset_by) VALUES (:sid, :name, 'self')",
+                    {"sid": sid, "name": name},
                 )
                 for k in ["reset_step","reset_target_sid","reset_target_name","reset_question","reset_ans_hash"]:
                     st.session_state.pop(k, None)
@@ -280,16 +285,17 @@ def _render_user_approval_manager():
     st.sidebar.markdown("---")
     st.sidebar.header("👤 사용자 승인 관리")
 
-    pending_users = run_query(
+    df_pending = run_query(
         "SELECT student_id, name, role FROM approved_users WHERE status = 'PENDING'",
         fetch=True,
     )
 
-    if not pending_users:
+    if df_pending is None or df_pending.empty:
         st.sidebar.info("대기 중인 요청이 없습니다.")
         return
 
-    for sid, name, role in pending_users:
+    for _, row in df_pending.iterrows():
+        sid, name, role = row["student_id"], row["name"], row["role"]
         normalized  = _normalize_role(role)
         pretty_role = ROLE_LABELS.get(normalized, role)
 
@@ -320,14 +326,14 @@ def _render_user_approval_manager():
                     st.error(f"'{ROLE_LABELS.get(selected_role)}' 정원이 가득 찼습니다.")
                 else:
                     run_query(
-                        "UPDATE approved_users SET status='APPROVED', role=?, permissions=? WHERE student_id=?",
-                        (selected_role, json.dumps(selected_perms), sid),
+                        "UPDATE approved_users SET status='APPROVED', role=:role, permissions=:perms WHERE student_id=:sid",
+                        {"role": selected_role, "perms": json.dumps(selected_perms), "sid": sid},
                     )
                     log_action("사용자 승인", f"{name}({sid}) 승인 / 역할: {selected_role} / 권한: {selected_perms}")
                     st.rerun()
 
             if col2.button("❌ 거절", key=f"rej_{sid}"):
-                run_query("DELETE FROM approved_users WHERE student_id = ?", (sid,))
+                run_query("DELETE FROM approved_users WHERE student_id = :sid", {"sid": sid})
                 log_action("사용자 거절", f"{name}({sid}) 승인 거절")
                 st.rerun()
 
@@ -337,14 +343,15 @@ def _render_user_management_panel():
     st.sidebar.markdown("---")
     st.sidebar.header("🛠️ 사용자 관리")
 
-    unread_rows = run_query(
+    df_unread = run_query(
         "SELECT id, name, student_id, reset_at, reset_by FROM reset_logs WHERE is_read = 0 ORDER BY reset_at DESC",
         fetch=True,
     )
-    if unread_rows:
-        st.sidebar.error(f"🔔 비밀번호 초기화 알림 {len(unread_rows)}건")
+    if df_unread is not None and not df_unread.empty:
+        st.sidebar.error(f"🔔 비밀번호 초기화 알림 {len(df_unread)}건")
         with st.sidebar.expander("📋 알림 확인"):
-            for log_id, name, sid, reset_at, reset_by in unread_rows:
+            for _, row in df_unread.iterrows():
+                log_id, name, sid, reset_at, reset_by = row["id"], row["name"], row["student_id"], row["reset_at"], row["reset_by"]
                 who = "본인 직접" if reset_by == "self" else "총무"
                 st.write(f"🔑 **{name}** ({sid}) — {who} 초기화 — {reset_at}")
             if st.button("✅ 모두 읽음", key="mark_reset_read"):
@@ -352,15 +359,16 @@ def _render_user_management_panel():
                 st.rerun()
 
     with st.sidebar.expander("👥 승인된 사용자 목록"):
-        approved = run_query(
+        df_approved = run_query(
             "SELECT student_id, name, role, status FROM approved_users WHERE status IN ('APPROVED','SUSPENDED') ORDER BY role",
             fetch=True,
         )
-        if not approved:
+        if df_approved is None or df_approved.empty:
             st.info("승인된 사용자가 없습니다.")
             return
 
-        for sid, name, role, status in approved:
+        for _, row in df_approved.iterrows():
+            sid, name, role, status = row["student_id"], row["name"], row["role"], row["status"]
             pretty_role  = ROLE_LABELS.get(_normalize_role(role), role)
             status_emoji = "✅" if status == "APPROVED" else "🚫"
             st.markdown(f"**{status_emoji} {name}** ({sid}) — {pretty_role}")
@@ -371,12 +379,12 @@ def _render_user_management_panel():
             if col1.button("🔑 비번 초기화", key=f"reset_pw_{sid}"):
                 temp_pw = _gen_temp_password()
                 run_query(
-                    "UPDATE approved_users SET password_hash = ? WHERE student_id = ?",
-                    (hash_password(temp_pw), sid),
+                    "UPDATE approved_users SET password_hash = :ph WHERE student_id = :sid",
+                    {"ph": hash_password(temp_pw), "sid": sid},
                 )
                 run_query(
-                    "INSERT INTO reset_logs (student_id, name, reset_by) VALUES (?, ?, 'treasurer')",
-                    (sid, name),
+                    "INSERT INTO reset_logs (student_id, name, reset_by) VALUES (:sid, :name, 'treasurer')",
+                    {"sid": sid, "name": name},
                 )
                 st.session_state[temp_key] = temp_pw
                 log_action("비밀번호 초기화", f"총무가 {name}({sid}) 비밀번호 초기화")
@@ -390,12 +398,12 @@ def _render_user_management_panel():
 
             if status == "APPROVED":
                 if col2.button("🚫 비활성화", key=f"suspend_{sid}"):
-                    run_query("UPDATE approved_users SET status='SUSPENDED' WHERE student_id=?", (sid,))
+                    run_query("UPDATE approved_users SET status='SUSPENDED' WHERE student_id=:sid", {"sid": sid})
                     log_action("계정 비활성화", f"{name}({sid}) 계정 비활성화")
                     st.rerun()
             else:
                 if col2.button("✅ 재활성화", key=f"activate_{sid}"):
-                    run_query("UPDATE approved_users SET status='APPROVED' WHERE student_id=?", (sid,))
+                    run_query("UPDATE approved_users SET status='APPROVED' WHERE student_id=:sid", {"sid": sid})
                     log_action("계정 재활성화", f"{name}({sid}) 계정 재활성화")
                     st.rerun()
 
@@ -408,15 +416,12 @@ def _render_audit_log_sidebar():
     st.sidebar.header("📜 감사 로그 센터")
 
     if st.sidebar.button("📥 로그 엑셀 백업"):
-        logs = run_query(
+        df_logs = run_query(
             "SELECT id, timestamp, action, details, user_mode, ip_address, device_info, operator_name FROM audit_logs ORDER BY id DESC",
             fetch=True,
         )
-        if logs:
-            df_logs = pd.DataFrame(
-                logs,
-                columns=["ID","일시","작업","상세내용","접속자","IP","기기","작업자명"],
-            )
+        if df_logs is not None and not df_logs.empty:
+            df_logs.columns = ["ID","일시","작업","상세내용","접속자","IP","기기","작업자명"]
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 df_logs.to_excel(writer, index=False, sheet_name="감사로그")
@@ -476,8 +481,8 @@ def _render_rubicon_admin_controls():
 
 
 def check_rubicon_security(current_user=None):
-    status_row = run_query("SELECT value FROM system_config WHERE key = 'status'", fetch=True)
-    status     = status_row[0][0] if status_row else "NORMAL"
+    df_status = run_query("SELECT value FROM system_config WHERE key = 'status'", fetch=True)
+    status = df_status.iloc[0]["value"] if (df_status is not None and not df_status.empty) else "NORMAL"
 
     if status == "LOCKED":
         st.markdown(
@@ -497,4 +502,4 @@ def check_rubicon_security(current_user=None):
 
     if current_user and _normalize_role(current_user.get("role")) in PRIVILEGED_ROLES:
         _render_rubicon_admin_controls()
-
+        
