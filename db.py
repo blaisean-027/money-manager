@@ -1,4 +1,6 @@
-iimport os
+"""Database access and Azure SQL connection helpers."""
+
+import os
 import json
 import hashlib
 import urllib.parse
