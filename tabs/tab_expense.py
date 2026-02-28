@@ -1,14 +1,14 @@
+# tabs/tab_expense.py
 import datetime
 import os
-import sqlite3
 import uuid
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text
 
 from audit import log_action
-from config import DB_FILE
-from db import run_query
+from db import run_query, conn
 from accounting.service import record_expense_entry
 from ai_audit import parse_receipt_image
 
@@ -19,11 +19,9 @@ CATEGORIES = [
     "기타", "과잠 제작비(예비비 선지출)",
 ]
 
-
 def _can_upload(current_user: dict) -> bool:
     perms = current_user.get("permissions", [])
     return "can_upload_receipt" in perms or current_user.get("role") in {"treasurer", "admin"}
-
 
 def _save_image(project_id: int, file) -> tuple[str, str]:
     folder = os.path.join(UPLOAD_DIR, f"project_{project_id}")
@@ -35,17 +33,15 @@ def _save_image(project_id: int, file) -> tuple[str, str]:
         f.write(file.getbuffer())
     return filename, filepath
 
-
 def _register_image(project_id, expense_id, filename, filepath, description, uploaded_by):
     run_query(
         """
         INSERT INTO receipt_images
             (project_id, expense_id, filename, filepath, description, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (:pid, :eid, :fname, :fpath, :desc, :user)
         """,
-        (project_id, expense_id, filename, filepath, description, uploaded_by),
+        {"pid": project_id, "eid": expense_id, "fname": filename, "fpath": filepath, "desc": description, "user": uploaded_by}
     )
-
 
 def render_expense_tab(current_project_id: int, current_user: dict = None):
     """TAB2: 지출 관리 + 영수증 첨부 + 갤러리."""
@@ -140,17 +136,18 @@ def render_expense_tab(current_project_id: int, current_user: dict = None):
                     tx_date  = date.strftime("%Y-%m-%d")
                     amount_i = int(amount)
 
-                    run_query(
-                        "INSERT INTO expenses (project_id, date, item, amount, category) VALUES (?, ?, ?, ?, ?)",
-                        (current_project_id, tx_date, item.strip(), amount_i, category),
-                    )
-
-                    expense_id_row = run_query(
-                        "SELECT id FROM expenses WHERE project_id=? AND date=? AND item=? AND amount=? ORDER BY id DESC LIMIT 1",
-                        (current_project_id, tx_date, item.strip(), amount_i),
-                        fetch=True,
-                    )
-                    expense_id = expense_id_row[0][0] if expense_id_row else None
+                    # PostgreSQL RETURNING id 활용하여 expense_id 가져오기
+                    with conn.session as s:
+                        res = s.execute(
+                            text("""
+                            INSERT INTO expenses (project_id, date, item, amount, category) 
+                            VALUES (:pid, :date, :item, :amount, :cat)
+                            RETURNING id
+                            """),
+                            {"pid": current_project_id, "date": tx_date, "item": item.strip(), "amount": amount_i, "cat": category}
+                        )
+                        expense_id = res.fetchone()[0]
+                        s.commit()
 
                     if uploaded_file and can_upload:
                         filename, filepath = _save_image(current_project_id, uploaded_file)
@@ -159,18 +156,15 @@ def render_expense_tab(current_project_id: int, current_user: dict = None):
                             filename, filepath, description.strip(), operator,
                         )
 
-                    with sqlite3.connect(DB_FILE) as conn:
-                        conn.execute("PRAGMA foreign_keys = ON;")
-                        record_expense_entry(
-                            conn,
-                            project_id=current_project_id,
-                            tx_date=tx_date,
-                            category=category,
-                            item=item.strip(),
-                            amount=amount_i,
-                            actor_name=operator,
-                        )
-                        conn.commit()
+                    # conn 인자 제거됨
+                    record_expense_entry(
+                        project_id=current_project_id,
+                        tx_date=tx_date,
+                        category=category,
+                        item=item.strip(),
+                        amount=amount_i,
+                        actor_name=operator,
+                    )
 
                     log_action("지출 등록", f"{tx_date} / {item} / {amount_i:,}원 / {category}")
                     st.session_state.pop("parsed_receipt", None)
@@ -179,28 +173,26 @@ def render_expense_tab(current_project_id: int, current_user: dict = None):
 
         with col_e2:
             st.subheader("📋 지출 내역")
-            expenses_data = run_query(
+            df_expenses_raw = run_query(
                 """
                 SELECT e.date, e.category, e.item, e.amount,
                        CASE WHEN r.id IS NOT NULL THEN '🧾' ELSE '' END AS 영수증
                 FROM expenses e
                 LEFT JOIN receipt_images r ON r.expense_id = e.id
-                WHERE e.project_id = ?
+                WHERE e.project_id = :pid
                 ORDER BY e.date DESC, e.id DESC
                 """,
-                (current_project_id,),
+                {"pid": current_project_id},
                 fetch=True,
             )
 
-            if expenses_data:
-                df_expenses = pd.DataFrame(
-                    expenses_data, columns=["날짜", "분류", "내역", "금액", "영수증"]
-                )
+            if df_expenses_raw is not None and not df_expenses_raw.empty:
+                df_expenses = df_expenses_raw.rename(columns={"date": "날짜", "category": "분류", "item": "내역", "amount": "금액"})
                 st.dataframe(df_expenses, use_container_width=True, hide_index=True)
                 total_expense = int(df_expenses["금액"].sum())
                 st.error(f"💸 총 지출: {total_expense:,.0f}원")
             else:
-                df_expenses   = pd.DataFrame(columns=["날짜", "분류", "내역", "금액"])
+                df_expenses   = pd.DataFrame(columns=["날짜", "분류", "내역", "금액", "영수증"])
                 total_expense = 0
                 st.info("지출 내역이 없습니다.")
 
@@ -208,25 +200,35 @@ def render_expense_tab(current_project_id: int, current_user: dict = None):
     with tab_gallery:
         st.subheader("🖼️ 프로젝트 이미지 갤러리")
 
-        images = run_query(
+        df_images = run_query(
             """
             SELECT r.id, r.filename, r.filepath, r.description,
                    r.uploaded_by, r.uploaded_at,
                    e.item, e.amount, e.date
             FROM receipt_images r
             LEFT JOIN expenses e ON e.id = r.expense_id
-            WHERE r.project_id = ?
+            WHERE r.project_id = :pid
             ORDER BY r.uploaded_at DESC
             """,
-            (current_project_id,),
+            {"pid": current_project_id},
             fetch=True,
         )
 
-        if not images:
+        if df_images is None or df_images.empty:
             st.info("첨부된 이미지가 없습니다.")
         else:
             cols = st.columns(3)
-            for idx, (img_id, filename, filepath, desc, uploader, uploaded_at, exp_item, exp_amount, exp_date) in enumerate(images):
+            for idx, row in df_images.iterrows():
+                img_id = row["id"]
+                filename = row["filename"]
+                filepath = row["filepath"]
+                desc = row["description"]
+                uploader = row["uploaded_by"]
+                uploaded_at = str(row["uploaded_at"])
+                exp_item = row["item"]
+                exp_amount = row["amount"]
+                exp_date = row["date"]
+
                 with cols[idx % 3]:
                     if os.path.exists(filepath):
                         st.image(filepath, use_container_width=True)
@@ -244,11 +246,10 @@ def render_expense_tab(current_project_id: int, current_user: dict = None):
                             new_desc = st.text_area("새 설명", value=desc or "", key=f"desc_{img_id}")
                             if st.button("저장", key=f"save_desc_{img_id}"):
                                 run_query(
-                                    "UPDATE receipt_images SET description=? WHERE id=?",
-                                    (new_desc.strip(), img_id),
+                                    "UPDATE receipt_images SET description=:desc WHERE id=:id",
+                                    {"desc": new_desc.strip(), "id": img_id},
                                 )
                                 st.rerun()
 
     df_return = df_expenses[["날짜", "분류", "내역", "금액"]] if "영수증" in df_expenses.columns else df_expenses
     return total_expense, df_return
-
