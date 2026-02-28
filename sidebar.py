@@ -25,7 +25,6 @@ from security import (
 
 ROLE_OPTIONS = ["treasurer", "deputy", "president", "vice_president", "member"]
 
-
 # ── 권한 헬퍼 ─────────────────────────────────────────────────────────────────
 def _can_archive(current_user: dict) -> bool:
     permissions = current_user.get("permissions", [])
@@ -33,13 +32,11 @@ def _can_archive(current_user: dict) -> bool:
         return True
     return current_user.get("role") in PRIVILEGED_ROLES
 
-
 def _can_delete_project(current_user: dict) -> bool:
     permissions = current_user.get("permissions", [])
     if isinstance(permissions, list) and "can_delete_project" in permissions:
         return True
     return current_user.get("role") in PRIVILEGED_ROLES
-
 
 # ── session_state 키 헬퍼 ─────────────────────────────────────────────────────
 def _archive_key(suffix, project_id): return f"archive_{suffix}_{project_id}"
@@ -52,7 +49,6 @@ def _clear_archive_state(project_id):
 def _clear_delete_state(project_id):
     st.session_state.pop(_delete_key("confirm", project_id), None)
 
-
 # ── 아카이브 콜백 ─────────────────────────────────────────────────────────────
 def _on_delete_confirm_click(project_id):
     delete_archived_project_data(
@@ -63,7 +59,6 @@ def _on_delete_confirm_click(project_id):
     )
     _clear_archive_state(project_id)
 
-
 def _on_project_delete_click(project_id, current_user):
     delete_archived_project_data(
         project_id=project_id,
@@ -73,7 +68,6 @@ def _on_project_delete_click(project_id, current_user):
         delete_project=True,
     )
     _clear_delete_state(project_id)
-
 
 # ── 아카이브 UI ───────────────────────────────────────────────────────────────
 def _render_admin_archive_ui(current_user, project_id):
@@ -121,7 +115,6 @@ def _render_admin_archive_ui(current_user, project_id):
             _clear_archive_state(project_id)
             st.rerun()
 
-
 # ── 프로젝트 삭제 UI ──────────────────────────────────────────────────────────
 def _render_project_delete_ui(current_user, project_id, project_name):
     if not _can_delete_project(current_user):
@@ -161,32 +154,31 @@ def _render_project_delete_ui(current_user, project_id, project_name):
             _clear_delete_state(project_id)
             st.rerun()
 
-
 # ── Excel / ZIP 빌더 ──────────────────────────────────────────────────────────
 def _build_project_excel(project_id, project_name):
-    budget_total_row = run_query(
-        "SELECT COALESCE(SUM(amount), 0) FROM budget_entries WHERE project_id = ?",
-        (project_id,), fetch=True,
+    df_budget = run_query(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_entries WHERE project_id = :pid",
+        {"pid": project_id}, fetch=True,
     )
-    budget_total = int(budget_total_row[0][0]) if budget_total_row else 0
+    budget_total = int(df_budget.iloc[0]["total"]) if (df_budget is not None and not df_budget.empty) else 0
 
-    members_data = run_query(
-        "SELECT paid_date, name, student_id, deposit_amount, note FROM members WHERE project_id = ?",
-        (project_id,), fetch=True,
+    df_members = run_query(
+        "SELECT paid_date, name, student_id, deposit_amount, note FROM members WHERE project_id = :pid",
+        {"pid": project_id}, fetch=True,
     )
-    if members_data:
-        df_members = pd.DataFrame(members_data, columns=["납부일","이름","학번","납부액","비고"])
+    if df_members is not None and not df_members.empty:
+        df_members.columns = ["납부일","이름","학번","납부액","비고"]
         total_student_dues = int(df_members["납부액"].sum())
     else:
         df_members = pd.DataFrame(columns=["납부일","이름","학번","납부액","비고"])
         total_student_dues = 0
 
-    expense_rows = run_query(
-        "SELECT date, category, item, amount FROM expenses WHERE project_id = ? ORDER BY date DESC",
-        (project_id,), fetch=True,
+    df_expenses = run_query(
+        "SELECT date, category, item, amount FROM expenses WHERE project_id = :pid ORDER BY date DESC",
+        {"pid": project_id}, fetch=True,
     )
-    if expense_rows:
-        df_expenses = pd.DataFrame(expense_rows, columns=["날짜","분류","내역","금액"])
+    if df_expenses is not None and not df_expenses.empty:
+        df_expenses.columns = ["날짜","분류","내역","금액"]
         total_expense = int(df_expenses["금액"].sum())
     else:
         df_expenses = pd.DataFrame(columns=["날짜","분류","내역","금액"])
@@ -201,7 +193,6 @@ def _build_project_excel(project_id, project_name):
         df_members=df_members,
     )
 
-
 def _build_all_projects_zip(project_list):
     mem_file = io.BytesIO()
     with zipfile.ZipFile(mem_file, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -209,7 +200,6 @@ def _build_all_projects_zip(project_list):
             safe = pname.replace("/","_").replace("\\","_")
             zf.writestr(f"{safe}_최종결산.xlsx", _build_project_excel(pid, pname))
     return mem_file.getvalue()
-
 
 # ── 로그인 화면 ───────────────────────────────────────────────────────────────
 def _render_login_center():
@@ -282,7 +272,6 @@ def _render_login_center():
 
     st.stop()
 
-
 # ── 메인 사이드바 ─────────────────────────────────────────────────────────────
 def render_sidebar(ai_available: bool):
     current_user = st.session_state.get("current_user")
@@ -304,7 +293,7 @@ def render_sidebar(ai_available: bool):
         if current_user.get("role") in PRIVILEGED_ROLES:
             st.sidebar.success("👑 총무(Treasurer) 권한으로 로그인됨")
             _render_user_approval_manager()
-            _render_user_management_panel()    # ✅ 사용자 관리 + 알림
+            _render_user_management_panel()
             _render_audit_log_sidebar()
 
         st.markdown("---")
@@ -317,21 +306,23 @@ def render_sidebar(ai_available: bool):
                 st.warning("행사명을 입력해줘!")
             else:
                 try:
-                    run_query("INSERT INTO projects (name) VALUES (?)", (new_project_name.strip(),))
+                    run_query("INSERT INTO projects (name) VALUES (:name)", {"name": new_project_name.strip()})
                     log_action("행사 생성", f"새 행사 '{new_project_name}' 생성")
                     st.success(f"'{new_project_name}' 준비 시작!")
                     st.rerun()
                 except Exception:
                     st.warning("이미 있는 이름이야.")
 
-        project_list = run_query(
+        df_projects = run_query(
             "SELECT id, name FROM projects ORDER BY created_at DESC, id DESC", fetch=True
         )
-        if not project_list:
+        if df_projects is None or df_projects.empty:
             st.info("👈 행사를 먼저 만들어줘!")
             st.stop()
 
-        project_dict          = {name: pid for pid, name in project_list}
+        # 데이터프레임을 리스트 튜플로 변환
+        project_list = list(df_projects.itertuples(index=False, name=None))
+        project_dict = {name: pid for pid, name in project_list}
         selected_project_name = st.selectbox("현재 관리 중인 행사", list(project_dict.keys()))
         current_project_id    = project_dict[selected_project_name]
 
@@ -364,4 +355,3 @@ def render_sidebar(ai_available: bool):
             st.error("🤖 AI 감사관: 오프라인 (API 키 확인 필요)")
 
     return current_user, selected_project_name, current_project_id
-
