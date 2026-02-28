@@ -75,7 +75,6 @@ def init_db():
             )
         """))
 
-        # 이미 테이블 있을 경우 extra_label 컬럼 추가
         s.execute(text("ALTER TABLE budget_entries ADD COLUMN IF NOT EXISTS extra_label TEXT"))
 
         s.execute(text("""
@@ -161,7 +160,24 @@ def init_db():
 
         s.commit()
 
-    # 관리자 계정 자동 생성
+    # ── 계정 코드 시드 데이터 ──
+    account_seed = [
+        ("1100", "Cash_Operating", "ASSET"),
+        ("1110", "Cash_Reserve", "ASSET"),
+        ("1200", "AR_JacketBuyers", "ASSET"),
+        ("4100", "Income_SchoolBudget", "INCOME"),
+        ("4110", "Income_ReserveIn", "INCOME"),
+        ("4120", "Income_StudentDues", "INCOME"),
+        ("5100", "Expense_General", "EXPENSE"),
+        ("5110", "Expense_JacketMaking", "EXPENSE"),
+    ]
+    for code, name, acc_type in account_seed:
+        run_query(
+            "INSERT INTO accounts (code, name, type) VALUES (:code, :name, :type) ON CONFLICT (code) DO NOTHING",
+            {"code": code, "name": name, "type": acc_type}
+        )
+
+    # ── 관리자 계정 자동 생성 ──
     admin_sid, admin_name, admin_password = get_admin_bootstrap()
     admin_password_hash = _hash_password(admin_password) if admin_password else None
     admin_permissions = json.dumps([
@@ -180,12 +196,12 @@ def init_db():
 def run_query(query: str, params=None, fetch: bool = False):
     try:
         if fetch:
-            return conn.query(query, params=params, ttl=30)  # 캐시 30초로 속도 개선
+            return conn.query(query, params=params, ttl=30)
         else:
             with conn.session as s:
                 s.execute(text(query), params)
                 s.commit()
-            st.cache_data.clear()  # 데이터 변경 시 캐시 갱신
+            st.cache_data.clear()
     except Exception as e:
         st.error(f"❌ DB 에러: {e}")
         return None
