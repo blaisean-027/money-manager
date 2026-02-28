@@ -15,12 +15,16 @@ ACCOUNT_SEED = [
 ]
 
 def init_accounting_accounts():
-    """Azure SQL용 존재 확인 후 INSERT"""
+    """초기 계정 과목 설정 (Azure SQL용 IF NOT EXISTS)"""
     for code, name, acc_type in ACCOUNT_SEED:
-        run_query("""
+        run_query(
+            """
             IF NOT EXISTS (SELECT 1 FROM accounts WHERE code = :code)
-            INSERT INTO accounts (code, name, type) VALUES (:code, :name, :type)
-        """, {"code": code, "name": name, "type": acc_type})
+            INSERT INTO accounts (code, name, type) 
+            VALUES (:code, :name, :type)
+            """,
+            {"code": code, "name": name, "type": acc_type}
+        )
 
 def _account_id(code: str) -> int:
     df = run_query("SELECT id FROM accounts WHERE code = :code", {"code": code}, fetch=True)
@@ -30,29 +34,46 @@ def _account_id(code: str) -> int:
 
 def _compose_desc(base: str, extra_label: str) -> str:
     extra = (extra_label or "").strip()
-    return f"{base} - {extra}" if extra else base
+    if not extra:
+        return base
+    return f"{base} - {extra}"
 
 def _post_journal(project_id: int, tx_date: str, description: str, source_kind: str, 
                   created_by: str, debit_code: str, credit_code: str, amount: int, memo: str = ""):
     with conn.session as s:
-        # Azure SQL: OUTPUT INSERTED.id 사용
-        res = s.execute(text("""
+        # Azure SQL의 OUTPUT INSERTED.id 사용
+        res = s.execute(
+            text("""
             INSERT INTO journal_entries (project_id, tx_date, description, source_kind, created_by)
             OUTPUT INSERTED.id
             VALUES (:pid, :date, :desc, :kind, :user)
-        """), {"pid": project_id, "date": tx_date, "desc": description, "kind": source_kind, "user": created_by})
+            """),
+            {"pid": project_id, "date": tx_date, "desc": description, "kind": source_kind, "user": created_by}
+        )
         je_id = res.fetchone()[0]
 
-        s.execute(text("INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo) VALUES (:je_id, :acc_id, :amount, 0, :memo)"),
-                  {"je_id": je_id, "acc_id": _account_id(debit_code), "amount": amount, "memo": memo})
+        s.execute(
+            text("""
+            INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo)
+            VALUES (:je_id, :acc_id, :amount, 0, :memo)
+            """),
+            {"je_id": je_id, "acc_id": _account_id(debit_code), "amount": amount, "memo": memo}
+        )
         
-        s.execute(text("INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo) VALUES (:je_id, :acc_id, 0, :amount, :memo)"),
-                  {"je_id": je_id, "acc_id": _account_id(credit_code), "amount": amount, "memo": memo})
+        s.execute(
+            text("""
+            INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo)
+            VALUES (:je_id, :acc_id, 0, :amount, :memo)
+            """),
+            {"je_id": je_id, "acc_id": _account_id(credit_code), "amount": amount, "memo": memo}
+        )
+        
         s.commit()
         return je_id
 
-# record_income_entry, record_expense_entry 함수는 기존과 동일하게 유지...
-def record_income_entry(project_id, tx_date, source_type, actor_name, amount, note="", extra_label="") -> Optional[int]:
+def record_income_entry(
+    project_id: int, tx_date: str, source_type: str, actor_name: str, amount: int, note: str = "", extra_label: str = "",
+) -> Optional[int]:
     if amount <= 0: return None
     if source_type == "school_budget": return _post_journal(project_id, tx_date, _compose_desc("학교/학과 지원금 입금", extra_label), "SCHOOL_BUDGET", actor_name, "1100", "4100", amount, note)
     if source_type == "reserve_fund": return _post_journal(project_id, tx_date, _compose_desc("예비비/이월금 유입", extra_label), "RESERVE_IN", actor_name, "1110", "4110", amount, note)
@@ -60,7 +81,9 @@ def record_income_entry(project_id, tx_date, source_type, actor_name, amount, no
     if source_type == "student_dues": return _post_journal(project_id, tx_date, _compose_desc("학생회비 입금", extra_label), "STUDENT_DUES", actor_name, "1100", "4120", amount, note)
     return None
 
-def record_expense_entry(project_id, tx_date, category, item, amount, actor_name):
+def record_expense_entry(
+    project_id: int, tx_date: str, category: str, item: str, amount: int, actor_name: str,
+):
     if amount <= 0: return None
     if category == "과잠 제작비(예비비 선지출)": return _post_journal(project_id, tx_date, f"{item} 선지출", "JACKET_ADVANCE", actor_name, "1200", "1110", amount, item)
     expense_code = "5110" if "과잠" in category else "5100"
