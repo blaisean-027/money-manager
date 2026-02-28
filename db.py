@@ -12,7 +12,7 @@ conn = st.connection(
     pool_size=5,
     max_overflow=0,
     pool_recycle=300,
-    pool_pre_ping=True,
+    pool_pre_ping=False,
     connect_args={"sslmode": "require"}
 )
 
@@ -41,7 +41,13 @@ def init_db():
             )
         """))
 
-        s.execute(text("CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"))
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
 
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS members (
@@ -69,6 +75,9 @@ def init_db():
             )
         """))
 
+        # 이미 테이블 있을 경우 extra_label 컬럼 추가
+        s.execute(text("ALTER TABLE budget_entries ADD COLUMN IF NOT EXISTS extra_label TEXT"))
+
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS expenses (
                 id SERIAL PRIMARY KEY,
@@ -81,7 +90,6 @@ def init_db():
             )
         """))
 
-        # ✅ 누락됐던 테이블들
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS reset_logs (
                 id SERIAL PRIMARY KEY,
@@ -156,7 +164,10 @@ def init_db():
     # 관리자 계정 자동 생성
     admin_sid, admin_name, admin_password = get_admin_bootstrap()
     admin_password_hash = _hash_password(admin_password) if admin_password else None
-    admin_permissions = json.dumps(["can_view", "can_edit", "can_manage_members", "can_export", "can_archive", "can_delete_project", "can_upload_receipt"])
+    admin_permissions = json.dumps([
+        "can_view", "can_edit", "can_manage_members",
+        "can_export", "can_archive", "can_delete_project", "can_upload_receipt"
+    ])
 
     run_query("""
         INSERT INTO approved_users (student_id, name, role, status, password_hash, permissions)
@@ -169,11 +180,12 @@ def init_db():
 def run_query(query: str, params=None, fetch: bool = False):
     try:
         if fetch:
-            return conn.query(query, params=params, ttl=0)
+            return conn.query(query, params=params, ttl=30)  # 캐시 30초로 속도 개선
         else:
             with conn.session as s:
                 s.execute(text(query), params)
                 s.commit()
+            st.cache_data.clear()  # 데이터 변경 시 캐시 갱신
     except Exception as e:
         st.error(f"❌ DB 에러: {e}")
         return None
@@ -182,7 +194,7 @@ def get_all_data(table_name: str) -> pd.DataFrame:
     allowed = {"projects", "members", "budget_entries", "expenses", "approved_users"}
     if table_name not in allowed:
         return pd.DataFrame()
-    return conn.query(f"SELECT * FROM {table_name}", ttl=0)
+    return conn.query(f"SELECT * FROM {table_name}", ttl=30)
 
 # ── 4. 장부 조회 함수 ──
 def get_ledger(project_id: int) -> pd.DataFrame:
@@ -199,4 +211,4 @@ def get_ledger(project_id: int) -> pd.DataFrame:
         FROM expenses WHERE project_id = :pid
         ORDER BY transaction_date ASC, recorded_at ASC
     """
-    return conn.query(query, params={"pid": project_id}, ttl=0)
+    return conn.query(query, params={"pid": project_id}, ttl=30)
