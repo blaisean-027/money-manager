@@ -1,6 +1,6 @@
 streamlit
 sqlalchemy
-psycopg2-binary
+pyodbc
 pandas
 openpyxl
 groq
