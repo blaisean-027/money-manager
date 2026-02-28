@@ -29,8 +29,8 @@ def _can_edit(current_user: dict) -> bool:
     perms = current_user.get("permissions", [])
     return "can_edit" in perms or current_user.get("role") in {"treasurer", "admin"}
 
-def render_budget_tab(current_project_id: int, **kwargs):
-    current_user = kwargs.get("current_user", {})
+def render_budget_tab(current_project_id: int, current_user: dict = None, **kwargs):
+    current_user = current_user or {}
     can_edit = _can_edit(current_user)
 
     st.subheader("1️⃣ 예산/예비비 입력")
@@ -83,7 +83,8 @@ def render_budget_tab(current_project_id: int, **kwargs):
     with col_budget_table:
         df_budget_raw = run_query(
             """
-            SELECT id, entry_date, source_type, contributor_name, amount, note, COALESCE(extra_label,'') AS extra_label
+            SELECT id, entry_date, source_type, contributor_name, amount, note,
+                   COALESCE(extra_label,'') AS extra_label
             FROM budget_entries
             WHERE project_id = :pid
             ORDER BY entry_date DESC, id DESC
@@ -102,14 +103,14 @@ def render_budget_tab(current_project_id: int, **kwargs):
             })[["입금일", "구분", "입금자", "금액", "비고"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # ── 수정/삭제 ──
             if can_edit:
                 with st.expander("✏️ 예산 항목 수정/삭제"):
                     labels = [
                         f"{row['entry_date']} | {_compose_type_label(row['source_type'], row['extra_label'])} | {row['contributor_name']} | {row['amount']:,}원"
                         for _, row in df_budget_raw.iterrows()
                     ]
-                    selected_idx = st.selectbox("수정할 항목 선택", range(len(labels)), format_func=lambda i: labels[i], key="budget_edit_select")
+                    selected_idx = st.selectbox("수정할 항목 선택", range(len(labels)),
+                                                format_func=lambda i: labels[i], key="budget_edit_select")
                     sel = df_budget_raw.iloc[selected_idx]
 
                     col_edit, col_del = st.columns([3, 1])
@@ -119,7 +120,8 @@ def render_budget_tab(current_project_id: int, **kwargs):
                             e_type = st.selectbox(
                                 "수입 구분",
                                 ["school_budget", "reserve_fund", "reserve_recovery"],
-                                index=["school_budget", "reserve_fund", "reserve_recovery"].index(sel["source_type"]) if sel["source_type"] in ["school_budget", "reserve_fund", "reserve_recovery"] else 0,
+                                index=["school_budget", "reserve_fund", "reserve_recovery"].index(sel["source_type"])
+                                      if sel["source_type"] in ["school_budget", "reserve_fund", "reserve_recovery"] else 0,
                                 format_func=lambda x: INCOME_TYPE_LABELS.get(x, x),
                             )
                             e_extra = st.text_input("추가 항목", value=sel["extra_label"])
@@ -162,7 +164,7 @@ def render_budget_tab(current_project_id: int, **kwargs):
                             st.session_state.pop("budget_delete_confirm", None)
                             st.rerun()
         else:
-            df_budget = pd.DataFrame(columns=["입금일", "구분", "입금자", "금액", "비고"])
+            df_budget_raw = pd.DataFrame()
             st.info("아직 등록된 예산/예비비가 없습니다.")
 
     st.divider()
@@ -222,14 +224,14 @@ def render_budget_tab(current_project_id: int, **kwargs):
             st.dataframe(df_members[["납부일", "이름", "학번", "납부액", "비고"]], use_container_width=True, hide_index=True)
             total_student_dues = int(df_members["납부액"].sum())
 
-            # ── 수정/삭제 ──
             if can_edit:
                 with st.expander("✏️ 학생회비 항목 수정/삭제"):
                     m_labels = [
                         f"{row['paid_date']} | {row['name']}({row['student_id'] or '-'}) | {row['deposit_amount']:,}원"
                         for _, row in df_members_raw.iterrows()
                     ]
-                    m_sel_idx = st.selectbox("수정할 항목 선택", range(len(m_labels)), format_func=lambda i: m_labels[i], key="member_edit_select")
+                    m_sel_idx = st.selectbox("수정할 항목 선택", range(len(m_labels)),
+                                             format_func=lambda i: m_labels[i], key="member_edit_select")
                     m_sel = df_members_raw.iloc[m_sel_idx]
 
                     col_medit, col_mdel = st.columns([3, 1])
