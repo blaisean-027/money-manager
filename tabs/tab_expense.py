@@ -126,11 +126,12 @@ def render_expense_tab(current_project_id: int, current_user: dict = None):
                     tx_date = date.strftime("%Y-%m-%d")
                     amount_i = int(amount)
                     with conn.session as s:
+                        # 💡 애저(MS SQL) 용 문법으로 수정한 핵심 부분이야!
                         res = s.execute(
                             text("""
                                 INSERT INTO expenses (project_id, date, item, amount, category)
+                                OUTPUT INSERTED.id
                                 VALUES (:pid, :date, :item, :amount, :cat)
-                                RETURNING id
                             """),
                             {"pid": current_project_id, "date": tx_date,
                              "item": item.strip(), "amount": amount_i, "cat": category}
