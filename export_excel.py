@@ -39,6 +39,7 @@ def create_settlement_excel(
 
     return output.getvalue()
 
+
 def create_audit_log_excel(df_logs: pd.DataFrame) -> bytes:
     """
     [신규] 감사 로그 백업용 엑셀 생성 (DB 용량 확보용)
