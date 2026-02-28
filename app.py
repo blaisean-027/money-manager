@@ -77,6 +77,24 @@ def _normalize_expense_result(result, current_project_id: int):
         return result
     return _fallback_expense_data(current_project_id)
 
+
+def _render_db_connection_error(err: Exception):
+    msg = str(err)
+    st.error("🚨 데이터베이스 연결에 실패했어요.")
+
+    if "40613" in msg:
+        st.warning(
+            "Azure SQL 데이터베이스가 일시 중단/재시작 상태일 수 있어요. "
+            "잠시 후 새로고침하면 다시 연결될 수 있습니다."
+        )
+
+    st.info("Streamlit Secrets의 DB 정보(url/계정/DB명)와 Azure SQL 서버 상태를 확인해 주세요.")
+
+    with st.expander("오류 상세 보기"):
+        st.code(msg)
+
+    st.stop()
+
 render_budget_tab = _resolve_tab_renderer(
     "tabs.tab_budget", "render_budget_tab", "render_budget", "render",
 )
@@ -93,7 +111,11 @@ render_ledger_tab = _resolve_tab_renderer(
 def main():
     init_page()
     client, ai_available = init_ai()
-    init_db()
+
+    try:
+        init_db()
+    except Exception as e:
+        _render_db_connection_error(e)
 
     st.session_state["ai_client"] = client if ai_available else None
 
