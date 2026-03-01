@@ -1,7 +1,6 @@
 import pandas as pd
 from typing import Optional
-from sqlalchemy import text
-from db import run_query, conn
+from db import run_query
 
 ACCOUNT_SEED = [
     ("1100", "Cash:Operating", "ASSET"),
@@ -38,38 +37,39 @@ def _compose_desc(base: str, extra_label: str) -> str:
         return base
     return f"{base} - {extra}"
 
-def _post_journal(project_id: int, tx_date: str, description: str, source_kind: str, 
+def _post_journal(project_id: int, tx_date: str, description: str, source_kind: str,
                   created_by: str, debit_code: str, credit_code: str, amount: int, memo: str = ""):
-    with conn.session as s:
-        # Azure SQL의 OUTPUT INSERTED.id 사용
-        res = s.execute(
-            text("""
-            INSERT INTO journal_entries (project_id, tx_date, description, source_kind, created_by)
-            OUTPUT INSERTED.id
-            VALUES (:pid, :date, :desc, :kind, :user)
-            """),
-            {"pid": project_id, "date": tx_date, "desc": description, "kind": source_kind, "user": created_by}
-        )
-        je_id = res.fetchone()[0]
+    # Azure SQL의 OUTPUT INSERTED.id 사용
+    df_je = run_query(
+        """
+        INSERT INTO journal_entries (project_id, tx_date, description, source_kind, created_by)
+        OUTPUT INSERTED.id
+        VALUES (:pid, :date, :desc, :kind, :user)
+        """,
+        {"pid": project_id, "date": tx_date, "desc": description, "kind": source_kind, "user": created_by},
+        fetch=True,
+    )
+    if df_je is None or df_je.empty:
+        return None
 
-        s.execute(
-            text("""
-            INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo)
-            VALUES (:je_id, :acc_id, :amount, 0, :memo)
-            """),
-            {"je_id": je_id, "acc_id": _account_id(debit_code), "amount": amount, "memo": memo}
-        )
-        
-        s.execute(
-            text("""
-            INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo)
-            VALUES (:je_id, :acc_id, 0, :amount, :memo)
-            """),
-            {"je_id": je_id, "acc_id": _account_id(credit_code), "amount": amount, "memo": memo}
-        )
-        
-        s.commit()
-        return je_id
+    je_id = int(df_je.iloc[0]["id"])
+    run_query(
+        """
+        INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo)
+        VALUES (:je_id, :acc_id, :amount, 0, :memo)
+        """,
+        {"je_id": je_id, "acc_id": _account_id(debit_code), "amount": amount, "memo": memo},
+    )
+
+    run_query(
+        """
+        INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit, memo)
+        VALUES (:je_id, :acc_id, 0, :amount, :memo)
+        """,
+        {"je_id": je_id, "acc_id": _account_id(credit_code), "amount": amount, "memo": memo},
+    )
+
+    return je_id
 
 def record_income_entry(
     project_id: int, tx_date: str, source_type: str, actor_name: str, amount: int, note: str = "", extra_label: str = "",
