@@ -481,7 +481,7 @@ def _render_rubicon_admin_controls():
 
 
 def check_rubicon_security(current_user=None):
-    df_status = run_query("SELECT value FROM system_config WHERE key = 'status'", fetch=True)
+    df_status = run_query("SELECT [value] FROM system_config WHERE [key] = 'status'", fetch=True)
     status = df_status.iloc[0]["value"] if (df_status is not None and not df_status.empty) else "NORMAL"
 
     if status == "LOCKED":
