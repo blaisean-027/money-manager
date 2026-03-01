@@ -4,10 +4,8 @@ import uuid
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import text
-
 from audit import log_action
-from db import run_query, conn
+from db import run_query
 from accounting.service import record_expense_entry
 from ai_audit import parse_receipt_image
 
@@ -125,19 +123,23 @@ def render_expense_tab(current_project_id: int, current_user: dict = None):
                 else:
                     tx_date = date.strftime("%Y-%m-%d")
                     amount_i = int(amount)
-                    with conn.session as s:
-                        # 💡 애저(MS SQL) 용 문법으로 수정한 핵심 부분이야!
-                        res = s.execute(
-                            text("""
-                                INSERT INTO expenses (project_id, date, item, amount, category)
-                                OUTPUT INSERTED.id
-                                VALUES (:pid, :date, :item, :amount, :cat)
-                            """),
-                            {"pid": current_project_id, "date": tx_date,
-                             "item": item.strip(), "amount": amount_i, "cat": category}
-                        )
-                        expense_id = res.fetchone()[0]
-                        s.commit()
+                    # 💡 애저(MS SQL) 용 문법 + run_query(fetch=True)로 ID 수집
+                    df_inserted = run_query(
+                        """
+                        INSERT INTO expenses (project_id, date, item, amount, category)
+                        OUTPUT INSERTED.id
+                        VALUES (:pid, :date, :item, :amount, :cat)
+                        """,
+                        {
+                            "pid": current_project_id,
+                            "date": tx_date,
+                            "item": item.strip(),
+                            "amount": amount_i,
+                            "cat": category,
+                        },
+                        fetch=True,
+                    )
+                    expense_id = int(df_inserted.iloc[0]["id"]) if (df_inserted is not None and not df_inserted.empty) else None
                     if uploaded_file and can_upload:
                         filename, filepath = _save_image(current_project_id, uploaded_file)
                         _register_image(current_project_id, expense_id, filename, filepath, description.strip(), operator)
