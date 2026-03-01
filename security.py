@@ -495,7 +495,7 @@ def check_rubicon_security(current_user=None):
         if unlock_code == "10 legio":
             with st.spinner("10군단 도착..."):
                 time.sleep(2)
-            run_query("UPDATE system_config SET value = 'NORMAL' WHERE key = 'status'")
+            run_query("UPDATE system_config SET [value] = 'NORMAL' WHERE key = 'status'")
             log_action("보안 해제", "시스템 잠금 해제됨 (10 legio)")
             st.rerun()
         st.stop()
