@@ -31,7 +31,7 @@ def _build_sqlalchemy_url() -> str:
     if direct_url:
         return direct_url
 
-    # 2) streamlit [connections.sql] 포맷 사용 시도
+    # 2) Streamlit [connections.sql] 포맷 사용 시도
     try:
         if "connections" in st.secrets and "sql" in st.secrets["connections"]:
             cfg = st.secrets["connections"]["sql"]
@@ -48,12 +48,48 @@ def _build_sqlalchemy_url() -> str:
             driver = cfg.get("driver", "pymssql")
 
             if all([host, database, username, password]) and dialect == "mssql":
+                if str(driver).lower() == "pyodbc":
+                    odbc_driver = cfg.get("odbc_driver") or "ODBC Driver 18 for SQL Server"
+                    conn_str = (
+                        f"DRIVER={{{odbc_driver}}};"
+                        f"SERVER={host},{port};"
+                        f"DATABASE={database};"
+                        f"UID={username};"
+                        f"PWD={password};"
+                        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+                    )
+                    return f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(conn_str)}"
+
                 quoted_password = urllib.parse.quote_plus(str(password))
                 return f"mssql+{driver}://{username}:{quoted_password}@{host}:{port}/{database}"
     except Exception:
         pass
 
-    # 3) 개별 값으로 Azure SQL URL 조립
+    # 3) 요청한 [azure] 시크릿 포맷 (pyodbc)
+    try:
+        if "azure" in st.secrets:
+            az = st.secrets["azure"]
+            server = az.get("server")
+            database = az.get("database")
+            username = az.get("username")
+            password = az.get("password")
+            driver = az.get("driver", "ODBC Driver 18 for SQL Server")
+            port = az.get("port", 1433)
+
+            if all([server, database, username, password]):
+                conn_str = (
+                    f"DRIVER={{{driver}}};"
+                    f"SERVER={server},{port};"
+                    f"DATABASE={database};"
+                    f"UID={username};"
+                    f"PWD={password};"
+                    "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+                )
+                return f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(conn_str)}"
+    except Exception:
+        pass
+
+    # 4) 개별 값으로 Azure SQL URL 조립 (pymssql fallback)
     server = _secret_get("AZURE_SQL_SERVER", "DB_HOST")
     database = _secret_get("AZURE_SQL_DATABASE", "DB_NAME")
     username = _secret_get("AZURE_SQL_USER", "DB_USER")
@@ -62,8 +98,8 @@ def _build_sqlalchemy_url() -> str:
 
     if not all([server, database, username, password]):
         raise RuntimeError(
-            "DB 접속 정보가 없습니다. secrets 또는 환경변수에 SQLALCHEMY_DATABASE_URI(권장) "
-            "또는 AZURE_SQL_SERVER/AZURE_SQL_DATABASE/AZURE_SQL_USER/AZURE_SQL_PASSWORD를 설정하세요."
+            "DB 접속 정보가 없습니다. secrets 또는 환경변수에 SQLALCHEMY_DATABASE_URI(권장), "
+            "[connections.sql], [azure], 또는 AZURE_SQL_SERVER/AZURE_SQL_DATABASE/AZURE_SQL_USER/AZURE_SQL_PASSWORD를 설정하세요."
         )
 
     quoted_password = urllib.parse.quote_plus(password)
