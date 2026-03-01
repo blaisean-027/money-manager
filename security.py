@@ -475,7 +475,7 @@ def _render_rubicon_admin_controls():
                 caption="운명 결정.",
             )
             time.sleep(4)
-            run_query("UPDATE system_config SET value = 'LOCKED' WHERE key = 'status'")
+            run_query("UPDATE system_config SET [value] = 'LOCKED' WHERE [key] = 'status'")
             log_action("보안 잠금", "루비콘 강을 건넜습니다 (시스템 폐쇄)")
             st.rerun()
 
