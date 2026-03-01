@@ -2,9 +2,8 @@ import datetime
 import json
 import pandas as pd
 from typing import Any, Tuple
-from sqlalchemy import text
 import streamlit as st
-from db import run_query, conn
+from db import run_query
 
 def _table_exists(table: str) -> bool:
     """Azure SQL에서 테이블 존재 확인"""
@@ -86,32 +85,39 @@ def archive_project(project_id: int, current_user: dict, archive_reason: str) ->
 
 def delete_archived_project_data(project_id: int, archived_by: str = "unknown", archive_reason: str = "", filename: str = "", delete_project: bool = False):
     _ensure_archive_history_table()
-    with conn.session as s:
-        try:
-            res = s.execute(text("SELECT name FROM projects WHERE id = :pid"), {"pid": project_id}).fetchone()
-            project_name = res[0] if res else "unknown"
+    try:
+        df_name = run_query("SELECT name FROM projects WHERE id = :pid", {"pid": project_id}, fetch=True)
+        project_name = str(df_name.iloc[0]["name"]) if (df_name is not None and not df_name.empty) else "unknown"
 
-            s.execute(text("""
-                INSERT INTO archive_history (project_id, project_name, archived_by, archive_reason, archived_at, filename)
-                VALUES (:pid, :name, :by, :reason, :at, :fname)
-            """), {"pid": project_id, "name": project_name, "by": archived_by, "reason": archive_reason, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "fname": filename})
+        run_query(
+            """
+            INSERT INTO archive_history (project_id, project_name, archived_by, archive_reason, archived_at, filename)
+            VALUES (:pid, :name, :by, :reason, :at, :fname)
+            """,
+            {
+                "pid": project_id,
+                "name": project_name,
+                "by": archived_by,
+                "reason": archive_reason,
+                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "fname": filename,
+            },
+        )
 
-            if _table_exists("journal_entries"):
-                res_ids = s.execute(text("SELECT id FROM journal_entries WHERE project_id = :pid"), {"pid": project_id}).fetchall()
-                entry_ids = [str(r[0]) for r in res_ids]
-                if entry_ids and _table_exists("journal_lines"):
-                    id_list = ",".join(entry_ids)
-                    s.execute(text(f"DELETE FROM journal_lines WHERE journal_entry_id IN ({id_list})"))
-                s.execute(text("DELETE FROM journal_entries WHERE project_id = :pid"), {"pid": project_id})
+        if _table_exists("journal_entries"):
+            df_ids = run_query("SELECT id FROM journal_entries WHERE project_id = :pid", {"pid": project_id}, fetch=True)
+            entry_ids = [str(v) for v in df_ids["id"].tolist()] if (df_ids is not None and not df_ids.empty) else []
+            if entry_ids and _table_exists("journal_lines"):
+                id_list = ",".join(entry_ids)
+                run_query(f"DELETE FROM journal_lines WHERE journal_entry_id IN ({id_list})")
+            run_query("DELETE FROM journal_entries WHERE project_id = :pid", {"pid": project_id})
 
-            for table in ("budget_entries", "expenses", "members"):
-                if _table_exists(table):
-                    s.execute(text(f"DELETE FROM {table} WHERE project_id = :pid"), {"pid": project_id})
+        for table in ("budget_entries", "expenses", "members"):
+            if _table_exists(table):
+                run_query(f"DELETE FROM {table} WHERE project_id = :pid", {"pid": project_id})
 
-            if delete_project:
-                s.execute(text("DELETE FROM projects WHERE id = :pid"), {"pid": project_id})
-            s.commit()
-        except Exception as e:
-            s.rollback()
-            st.error(f"데이터 삭제 중 오류 발생: {e}")
-            raise e
+        if delete_project:
+            run_query("DELETE FROM projects WHERE id = :pid", {"pid": project_id})
+    except Exception as e:
+        st.error(f"데터 삭제 중 오류 발생: {e}")
+        raise e
