@@ -10,6 +10,7 @@ import os
 import json
 import hashlib
 import urllib.parse
+from typing import Any, Dict, Iterable, Optional
 
 import pandas as pd
 import streamlit as st
@@ -38,9 +39,68 @@ def _secret_get(*keys, default=None):
     return default
 
 
+def _coerce_to_plain_dict(value: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(value, dict):
+        return value
+    try:
+        return dict(value)
+    except Exception:
+        return None
+
+
+def _find_from_secret_sections(*keys: str):
+    normalized = {k.lower(): k for k in keys}
+    section_candidates: Iterable[str] = (
+        "database",
+        "db",
+        "sql",
+        "mssql",
+        "azure_sql",
+        "azure",
+        "connections",
+    )
+
+    try:
+        root = _coerce_to_plain_dict(st.secrets) or {}
+    except Exception:
+        root = {}
+
+    for section_name in section_candidates:
+        section = root.get(section_name)
+        section_dict = _coerce_to_plain_dict(section)
+        if not section_dict:
+            continue
+
+        # connections.sql.url 처럼 중첩된 구조 지원
+        if section_name == "connections" and "sql" in section_dict:
+            sql_section = _coerce_to_plain_dict(section_dict.get("sql"))
+            if sql_section:
+                section_dict = {**section_dict, **sql_section}
+
+        lowered_map = {str(k).lower(): v for k, v in section_dict.items()}
+        for key_lower in normalized:
+            if key_lower in lowered_map and lowered_map[key_lower] not in (None, ""):
+                return lowered_map[key_lower]
+
+    return None
+
+
 def _build_sqlalchemy_url() -> str:
     # 0) 가장 안정: 단일 키로 직접 URL 제공
-    direct = _secret_get("SQLALCHEMY_DATABASE_URI", "DATABASE_URL", "AZURE_SQL_URL")
+    direct = _secret_get(
+        "SQLALCHEMY_DATABASE_URI",
+        "DATABASE_URL",
+        "AZURE_SQL_URL",
+        "DB_URL",
+        "MSSQL_URL",
+    )
+    if not direct:
+        direct = _find_from_secret_sections(
+            "url",
+            "database_url",
+            "sqlalchemy_database_uri",
+            "azure_sql_url",
+        )
     if direct:
         return direct
 
@@ -54,14 +114,36 @@ def _build_sqlalchemy_url() -> str:
         pass
 
     # 2) 개별 값 조합 (pymssql)
-    server = _secret_get("AZURE_SQL_SERVER", "DB_HOST")
-    database = _secret_get("AZURE_SQL_DATABASE", "DB_NAME")
-    username = _secret_get("AZURE_SQL_USER", "DB_USER")
-    password = _secret_get("AZURE_SQL_PASSWORD", "DB_PASSWORD")
+    server = _secret_get("AZURE_SQL_SERVER", "DB_HOST", "DB_SERVER") or _find_from_secret_sections(
+        "server", "host", "db_host", "db_server"
+    )
+    database = _secret_get("AZURE_SQL_DATABASE", "DB_NAME", "DATABASE") or _find_from_secret_sections(
+        "database", "db_name", "dbname"
+    )
+    username = _secret_get(
+        "AZURE_SQL_USER", "DB_USER", "DB_USERNAME", "USERNAME"
+    ) or _find_from_secret_sections("user", "username", "db_user", "db_username")
+    password = _secret_get(
+        "AZURE_SQL_PASSWORD", "DB_PASSWORD", "PASSWORD"
+    ) or _find_from_secret_sections("password", "db_password")
     port = _secret_get("AZURE_SQL_PORT", "DB_PORT", default="1433")
+    port = port or _find_from_secret_sections("port", "db_port") or "1433"
 
     if not all([server, database, username, password]):
-        raise RuntimeError("DB 접속 정보가 없습니다. Streamlit Secrets 확인하세요.")
+        missing = [
+            label
+            for label, value in {
+                "server": server,
+                "database": database,
+                "username": username,
+                "password": password,
+            }.items()
+            if not value
+        ]
+        raise RuntimeError(
+            "DB 접속 정보가 없습니다. Streamlit Secrets 확인하세요. "
+            f"(missing: {', '.join(missing)})"
+        )
 
     quoted_password = urllib.parse.quote_plus(str(password))
     return f"mssql+pymssql://{username}:{quoted_password}@{server}:{port}/{database}"
